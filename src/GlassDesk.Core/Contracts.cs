@@ -29,7 +29,10 @@ public interface IUiDispatcher
 public enum HostEventKind { Enter=1, Leave=2, Move=3, Down=4, Up=5, Wheel=6, Invoke=7, RangeValue=8, DpiChanged=9, DisplayChanged=10, Resume=11, SystemSettingsChanged=12, OpenSettings=13, Quit=14, CaptureLost=15 }
 public readonly record struct HostPointerEvent(HostEventKind Kind, float X, float Y, int ScreenX, int ScreenY, int ControlId=0, double Value=0);
 public readonly record struct HostContext(int X, int Y, float Width, float Height, uint Dpi);
-public readonly record struct HostFrame(float Width, float Height, float Radius, float Blur=20, float TintOpacity=.24f, bool Solid=false);
+public readonly record struct HostFrame(float Width, float Height, float Radius, float Blur=20, float TintOpacity=.24f, bool Solid=false)
+{
+    public float SurfaceTension {get;init;}
+}
 public sealed record AccessibleControl(int Id, string Name, float X, float Y, float Width, float Height, bool Enabled=true,
     bool IsRange=false, double Value=0, double Minimum=0, double Maximum=100);
 public interface IWidgetHost : IDisposable
@@ -43,6 +46,7 @@ public interface IWidgetHost : IDisposable
     void SetVisible(bool visible);
     void SetAccessibleControls(IReadOnlyList<AccessibleControl> controls, string name);
 }
+public enum WidgetTextInk { Black=0, White=1 }
 public sealed record WidgetPreferences
 {
     public int Version {get;init;}=4;
@@ -53,6 +57,7 @@ public sealed record WidgetPreferences
     public bool ClockShowDate {get;init;}
     public bool ClockShowWeekday {get;init;}
     public string ClockFontId {get;init;}=ClockFontCatalog.System;
+    public WidgetTextInk TextInk {get;init;}=WidgetTextInk.Black;
     public bool ReducedMotion {get;init;}
     public int HoverDelayMs {get;init;}=350;
     public int LeaveDelayMs {get;init;}=450;
@@ -62,7 +67,7 @@ public sealed record WidgetPreferences
     public uint HotkeyKey {get;init;}
     public string? MonitorId {get;init;}
     public double AnchorX {get;init;}=.5;
-    public double AnchorY {get;init;}=24;
+    public double AnchorY {get;init;}=0;
     public bool OnboardingSeen {get;init;}
     public bool AudioVisualizationEnabled {get;init;}=true;
     public bool CompanionEnabled {get;init;}=true;
@@ -71,7 +76,7 @@ public sealed record WidgetPreferences
     public string CompanionAppearanceId {get;init;}=CompanionAppearanceIds.Original;
     public bool LiquidGlassEnabled {get;init;}
     public PluginEnableMap PluginEnabled {get;init;}=new();
-    public WidgetPreferences Validated()=>this with {Version=4,LastDetailsPageId=Version<4?DetailsPageController.Music:DetailsPageController.Normalize(LastDetailsPageId),Blur=Math.Clamp(Blur,0,40),TintOpacity=Math.Clamp(TintOpacity,.10f,.90f),HoverDelayMs=Math.Clamp(HoverDelayMs,100,1500),LeaveDelayMs=Math.Clamp(LeaveDelayMs,100,1500),AnchorX=double.IsFinite(AnchorX)?Math.Clamp(AnchorX,0,1):.5,AnchorY=double.IsFinite(AnchorY)?Math.Max(0,AnchorY):24,CompanionColor=CompanionColor|0xff000000,CompanionAppearanceId=CompanionAppearanceIds.Normalize(CompanionAppearanceId),ClockFontId=ClockFontCatalog.Normalize(ClockFontId),PluginEnabled=PluginEnabled is null?new():new(PluginEnabled)};
+    public WidgetPreferences Validated()=>this with {Version=4,LastDetailsPageId=Version<4?DetailsPageController.Music:DetailsPageController.Normalize(LastDetailsPageId),Blur=Math.Clamp(Blur,0,40),TintOpacity=Math.Clamp(TintOpacity,.10f,.90f),HoverDelayMs=Math.Clamp(HoverDelayMs,100,1500),LeaveDelayMs=Math.Clamp(LeaveDelayMs,100,1500),MonitorId=null,AnchorX=.5,AnchorY=0,CompanionColor=CompanionColor|0xff000000,CompanionAppearanceId=CompanionAppearanceIds.Normalize(CompanionAppearanceId),ClockFontId=ClockFontCatalog.Normalize(ClockFontId),TextInk=TextInk is WidgetTextInk.Black or WidgetTextInk.White?TextInk:WidgetTextInk.Black,PluginEnabled=PluginEnabled is null?new():new(PluginEnabled)};
 }
 public readonly record struct ScreenRect(int X,int Y,int Width,int Height)
 {
@@ -86,9 +91,9 @@ public static class WidgetActions
     // Details dock destinations (append only): 120..124 = music/widgets/clock/focus/notes.
     public const int DockFirst=120;
     // Home page actions (append only): external shortcuts, navigation entries, folder dock.
-    public const int HomeAppFirst=300, HomeAppCount=6;
-    public const int HomeNavToggle=320, HomeNavFirst=321, HomeNavCount=3;
-    public const int HomeFolderFirst=330, HomeFolderCount=3;
+    public const int HomeAppFirst=300, HomeAppCount=2;
+    public const int HomeNavToggle=320, HomeNavFirst=321, HomeNavCount=5;
+    public const int HomeFolderFirst=330, HomeFolderCount=1;
     public const int HomePreviewFirst=340, HomePreviewCount=3;
     public const int HomeOpenFolder=350, HomeClosePopover=351, HomePopupBody=352, HomeBack=353;
 }

@@ -15,6 +15,8 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDBeginDiagnosticSnapshot(voi
 extern "C" __declspec(dllexport) HRESULT __stdcall GDEndDiagnosticSnapshot(void* context);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetDiagnosticSnapshotStatus(void* context,wchar_t* text,unsigned capacity);
 struct GDFrame { float width, height, radius, blur, tint; int solid; };
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrameWithTension(void* context,GDFrame const* frame,float tension);
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyPositionedFrameWithTension(void* context,GDFrame const* frame,float tension,int screenX,int screenY) noexcept;
 struct GDContext { int x, y; float width, height; unsigned dpi; };
 struct GDPoint { float x, y; };
 struct GDPointer { int kind; float x, y; int screenX, screenY, controlId; double value; };
@@ -40,12 +42,19 @@ struct GDNativeAbiInfo
 {uint32_t size,version,v1Size,v2Size,capabilities,reserved;};
 struct GDTextMetrics
 {float advance,widthIncludingTrailingWhitespace,height,baseline,lineHeight;uint32_t lineCount;};
+struct GDInkBounds
+{float left,top,right,bottom;};
 struct GDTypographyCacheStats
 {uint64_t formats,layouts,formatHits,layoutHits,layoutsCreated;};
 struct IInspectable;
+extern "C" __declspec(dllexport) HRESULT __stdcall GDCreateSystemGlassInk(void* context,IInspectable* ownMaskSurface,float x,float y,float width,float height,IInspectable** result);
+extern "C" __declspec(dllexport) HRESULT __stdcall GDUpdateSystemGlassInk(void* context,IInspectable* brush,float x,float y,float width,float height);
+extern "C" __declspec(dllexport) HRESULT __stdcall GDReleaseSystemGlassInk(void* context,IInspectable* brush) noexcept;
+extern "C" __declspec(dllexport) HRESULT __stdcall GDGetSystemGlassInkStage(void* context,uint32_t* result) noexcept;
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetNativeAbiInfo(GDNativeAbiInfo* result);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDConfigureTypographyV2(void* context,uint32_t profile,uint32_t tokenRevision,wchar_t const* qaFontPath);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDMeasureTextV2(void* context,GDOpV2 const* operation,uint32_t stride,GDTextMetrics* result);
+extern "C" __declspec(dllexport) HRESULT __stdcall GDMeasureTextInkBoundsV2(void* context,GDOpV2 const* operation,uint32_t stride,GDInkBounds* result);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDRenderSurfaceV2(void* context,float width,float height,GDOpV2 const* operations,uint32_t count,uint32_t stride,IInspectable** surface);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetTypographyCacheStats(void* context,GDTypographyCacheStats* result);
 struct GDAccessible
@@ -71,5 +80,6 @@ static_assert(offsetof(GDOpV2,textFlags)==84);
 static_assert(offsetof(GDOpV2,localeName)==88);
 static_assert(sizeof(GDNativeAbiInfo)==24);
 static_assert(sizeof(GDTextMetrics)==24);
+static_assert(sizeof(GDInkBounds)==16);
 static_assert(sizeof(GDTypographyCacheStats)==40);
 static_assert(sizeof(GDAccessible) == 64);

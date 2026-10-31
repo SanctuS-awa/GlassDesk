@@ -57,8 +57,8 @@ static class TypographyPageChecks
         {
             var old=new WidgetPreferences{Version=version,AnchorX=.31,CompanionColor=0xff123456,LastDetailsPageId="widgets"};
             var migrated=old.Validated();
-            check(migrated is {Version:4,LastDetailsPageId:"music",AnchorX:.31,CompanionColor:0xff123456},
-                $"v{version} migration adds the real music page without resetting existing preferences");
+            check(migrated is {Version:4,LastDetailsPageId:"music",AnchorX:.5,CompanionColor:0xff123456},
+                $"v{version} migration retains appearance and normalizes the fixed position");
         }
         var invalid=new WidgetPreferences{LastDetailsPageId="unknown",Blur=13}.Validated();
         check(invalid is {LastDetailsPageId:"music",Blur:13},"an unknown real-page ID falls back without resetting other settings");

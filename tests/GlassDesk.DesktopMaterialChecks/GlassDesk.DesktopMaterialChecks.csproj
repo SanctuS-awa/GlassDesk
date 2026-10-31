@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(GlassDeskUiPreview)'=='true'">
+    <DefineConstants>$(DefineConstants);GLASSDESK_UI_PREVIEW</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(GlassDeskUiPreview)'=='true' and '$(GlassDeskSystemGlassPreview)'=='true'">
+    <DefineConstants>$(DefineConstants);GLASSDESK_SYSTEM_GLASS_PREVIEW</DefineConstants>
+  </PropertyGroup>
+  <Target Name="ValidateSystemGlassPreviewChecks" BeforeTargets="PrepareForBuild"
+          Condition="'$(GlassDeskSystemGlassPreview)'=='true' and '$(GlassDeskUiPreview)'!='true'">
+    <Error Text="GlassDeskSystemGlassPreview checks require GlassDeskUiPreview=true." />
+  </Target>
+  <ItemGroup>
+    <ProjectReference Include="../../src/GlassDesk.Core/GlassDesk.Core.csproj" />
+    <Compile Include="../../src/GlassDesk.App/LaunchOptions.cs" Link="App/LaunchOptions.cs" />
+    <Compile Include="../../src/GlassDesk.App/DesktopMaterialLaunch.cs" Link="App/DesktopMaterialLaunch.cs" />
+  </ItemGroup>
+</Project>

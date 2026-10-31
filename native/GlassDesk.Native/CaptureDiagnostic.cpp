@@ -1,3 +1,4 @@
+#error Screen_capture_is_prohibited_by_the_GlassDesk_user_requirement
 // Standalone, never-visible WGC diagnostic. No host, Composition, shader,
 // pointer input, or settings mutation. --exclude changes capture affinity only
 // on two disposable, physically hidden diagnostic HWNDs owned by this process.

@@ -4,14 +4,13 @@
     <TargetPlatformMinVersion>10.0.22621.0</TargetPlatformMinVersion>
     <PlatformTarget>x64</PlatformTarget>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <GlassDeskNativeDirectory Condition="'$(GlassDeskNativeDirectory)' == ''">$(MSBuildThisFileDirectory)..\..\artifacts\native\$(Configuration)</GlassDeskNativeDirectory>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\GlassDesk.Core\GlassDesk.Core.csproj" /></ItemGroup>
   <ItemGroup>
-    <Content Include="$(GlassDeskNativeDirectory)\GlassDesk.Native.dll" Link="GlassDesk.Native.dll" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
-    <Content Include="$(GlassDeskNativeDirectory)\GlassDesk.CaptureWorker.exe" Link="GlassDesk.CaptureWorker.exe" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <Content Include="$(GlassDeskNativeDirectory)\GlassDesk.Native.dll" Link="GlassDesk.Native.dll" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" Condition="'$(GlassDeskNativeDirectory)' != ''" />
   </ItemGroup>
   <Target Name="VerifyGlassDeskNativeInputs" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\verify-native.ps1&quot; -NativeDirectory &quot;$(GlassDeskNativeDirectory)&quot;" />
+    <Error Condition="'$(GlassDeskNativeDirectory)' == ''" Text="A fresh isolated native candidate is required; artifacts/native/Release is disabled. Build with scripts/build-native.ps1 -OutputDirectory artifacts/native-desktop-candidate/&lt;candidate&gt;, then pass -p:GlassDeskNativeDirectory=&lt;absolute candidate path&gt;." />
+    <Exec Condition="'$(GlassDeskNativeDirectory)' != ''" Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\verify-native.ps1&quot; -NativeDirectory &quot;$(GlassDeskNativeDirectory)&quot;" />
   </Target>
 </Project>

@@ -106,7 +106,7 @@ public sealed class PluginHost : IAsyncDisposable
     {
         this.dispatcher=dispatcher;root=Path.Combine(dataDirectory,"plugins");configRoot=Path.Combine(dataDirectory,"plugin-config");
         AddBuiltIn("glassdesk.companion","陪伴球",true,()=>new CompanionPlugin(),"回应展开、指针与音乐变化；不规则短眨眼和注视，隐藏时停止动作。");
-        AddBuiltIn("glassdesk.liquidglass","液态玻璃",false,()=>new LiquidGlassPlugin(),"显示器 WGC 与 GPU 材质，最多 30Hz；实际增量见验收报告。");
+        AddBuiltIn("glassdesk.liquidglass","液态玻璃",false,()=>new LiquidGlassPlugin(),"系统磨砂与曲面光照；不截取桌面，不启动持续采集循环。");
         if(Directory.Exists(root))foreach(string directory in Directory.EnumerateDirectories(root).Where(d=>!Path.GetFileName(d).StartsWith('.')))
         {
             try

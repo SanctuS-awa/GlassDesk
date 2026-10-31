@@ -9,6 +9,8 @@ public readonly record struct SettingsUpdateResult(bool Success, string? Message
 public interface ISettingsCoordinator
 {
     bool IsUiPreview=>false;
+    bool UsesSystemCompositorLens=>false;
+    Windows.Graphics.IGeometrySource2D? CreatePreviewGeometry(System.Numerics.Vector2[] points)=>null;
     void PreviewCompanionAppearance(uint color,string appearanceId) { }
     WidgetPreferences Preferences { get; }
     MediaSnapshot Media { get; }

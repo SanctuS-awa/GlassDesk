@@ -19,6 +19,7 @@ internal sealed partial class GlassDeskCoordinator
     WidgetBoardEditor boardEditor = new(WidgetBoardData.CreateDefault());
     DispatcherQueueTimer widgetTimer = null!, pageSaveTimer = null!;
     WidgetInstanceConfigurationWindow? widgetConfiguration;
+    HomeNavigationWindow? homeNavigation;
     string? widgetConfigurationInstance;
     bool boardReady, boardAddMenu, widgetRefreshQueued;
     long boardRevision;
@@ -81,6 +82,7 @@ internal sealed partial class GlassDeskCoordinator
             ?Math.Clamp(WidgetBoardLayout.Pack(presented,width).ContentBottom + WidgetBoardLayout.BottomInset,
                 WidgetScene.MinimumBoardPageHeight,512):null;
         controller.SetDetailsPageHeight(height,Now);
+        if(CandidateGraphicsStopped)return;
         scene.SetWidgetBoard(pages.CurrentPageId,state,widgetScheduler.Results,boardRevision,boardEditor.IsEditing,boardAddMenu,pages.ScrollOffset);
     }
 
@@ -136,13 +138,14 @@ internal sealed partial class GlassDeskCoordinator
     void SelectDetailsPage(string id)
     {
         if(disposed||quitting)return;
+        if(id!=DetailsPageController.Home){scene.SetHomeNavExpanded(false);CloseHomeNavigationWindow();}
         if(id!=DetailsPageController.Home)CancelHomeFolderRead();
         pages.SetScrollOffset(scene.CurrentPageScroll);
         if(!pages.Select(id))return;
         CommitBoardOnLeave();
         Preferences=pages.ApplyTo(Preferences);
         pageSaveTimer.Stop();pageSaveTimer.Start();
-        Render();ScheduleTextTone();WakeMotion();Changed?.Invoke();
+        Render();WakeMotion();Changed?.Invoke();
     }
     async void OnPageSaveTimer(DispatcherQueueTimer sender,object args)
     {
@@ -427,11 +430,11 @@ internal sealed partial class GlassDeskCoordinator
         switch(action.Kind)
         {
             case HomeActionKind.App: LaunchHomeApp(action.Index);return;
-            case HomeActionKind.ToggleNav: scene.SetHomeNavExpanded(!scene.HomeNavExpanded);break;
-            case HomeActionKind.NavEntry:
-                if(action.Index==0)SelectDetailsPage(DetailsPageController.Music);
-                else if(action.Index==1)SelectDetailsPage(DetailsPageController.Widgets);
-                else ShowSettings();
+            case HomeActionKind.ToggleNav:
+                scene.SetHomeNavExpanded(!scene.HomeNavExpanded);
+                break;
+            case HomeActionKind.NavDestination:
+                if(action.Index==0)SelectMusicFromHomeNavigation();
                 return;
             case HomeActionKind.Folder: ShowHomeFolder(action.Index);return;
             case HomeActionKind.Preview:
@@ -461,6 +464,8 @@ internal sealed partial class GlassDeskCoordinator
     }
     async void ShowHomeFolder(int index)
     {
+        if(disposed||quitting||CandidateGraphicsStopped)return;
+        scene.SetHomeNavExpanded(false);CloseHomeNavigationWindow();
         if(scene.HomePopoverOpen&&scene.HomePopoverFolder==index)
         {CancelHomeFolderRead();scene.CloseHomePopover();Render();return;}
         CancelHomeFolderRead();
@@ -469,7 +474,7 @@ internal sealed partial class GlassDeskCoordinator
         string name=index==0?"桌面":index==1?"文档":"下载";
         scene.OpenHomePopover(index,new HomeFolderPreview(name,"",[],HomeFolderStatus.Loading));
         Render();
-        bool Current()=>!disposed&&!quitting&&!token.IsCancellationRequested&&ReferenceEquals(homeFolderRead,pending)
+        bool Current()=>!disposed&&!quitting&&!CandidateGraphicsStopped&&!token.IsCancellationRequested&&ReferenceEquals(homeFolderRead,pending)
             &&scene.HomePage&&controller.Form==WidgetForm.Details&&controller.Visible&&scene.HomePopoverFolder==index;
         try
         {
@@ -500,11 +505,7 @@ internal sealed partial class GlassDeskCoordinator
         {
             case 0: OpenMusic();return;
             case 1: LaunchExternal("msedge");return;
-            case 2: LaunchExternal("wt");return;
-            case 3:
-                LaunchExternal("ms-photos:");return;
-            case 4: LaunchExternal("notepad");return;
-            default: LaunchExternal("calc");return;
+            default:return;
         }
     }
     void LaunchExternal(string target)
@@ -566,6 +567,88 @@ internal sealed partial class GlassDeskCoordinator
         child.Dispose();child.PopupOwnershipChanged-=TrackWidgetOwnedWindow;
         TrackWidgetOwnedWindow(child.Handle,false);
     }
+    void SyncHomeNavigationWindow()
+    {
+        bool shouldShow=!disposed&&!quitting&&!CandidateGraphicsStopped&&controller.Visible
+            &&controller.Form==WidgetForm.Details&&scene.HomePage&&scene.HomeNavExpanded;
+        if(!shouldShow){CloseHomeNavigationWindow();return;}
+        if(homeNavigation is not null)
+        {
+            homeNavigation.ShowWithoutActivation();
+            UpdateOutsideGeometry();
+            return;
+        }
+        HomeNavigationWindow? child=null;
+        try
+        {
+            child=new(host.Handle,SelectMusicFromHomeNavigation,OnHomeNavigationDismissed,OnHomeNavigationClosed);
+            homeNavigation=child;
+            TrackWidgetOwnedWindow(child.Handle,true);
+            child.ShowWithoutActivation();
+            UpdateOutsideGeometry();
+        }
+        catch(Exception error)
+        {
+            diagnostics.RecordError("home-navigation-window",error);
+            if(child is not null)
+            {
+                try{child.Hide();}catch(Exception hideError){diagnostics.RecordError("home-navigation-hide",hideError);}
+                try{TrackWidgetOwnedWindow(child.Handle,true);}catch(Exception trackError){diagnostics.RecordError("home-navigation-track",trackError);}
+            }
+            scene.SetHomeNavExpanded(false);
+            notice="导航侧栏暂不可用。";
+            Render();
+        }
+    }
+    void SelectMusicFromHomeNavigation()
+    {
+        if(disposed||quitting||CandidateGraphicsStopped||controller.Form!=WidgetForm.Details||!scene.HomePage)return;
+        scene.SetHomeNavExpanded(false);
+        CloseHomeNavigationWindow();
+        SelectDetailsPage(DetailsPageController.Music);
+    }
+    void OnHomeNavigationDismissed(HomeNavigationWindow child)
+    {
+        if(!ReferenceEquals(homeNavigation,child))return;
+        scene.SetHomeNavExpanded(false);
+        CloseHomeNavigationWindow();
+        if(!disposed&&!quitting)Render();
+    }
+    void CloseHomeNavigationWindow()
+    {
+        // Ordinary dismissal only hides the XAML window; DisposeHomeNavigationWindow owns Close().
+        var child=homeNavigation;
+        if(child is null)return;
+        try{child.Hide();}
+        catch(Exception error)
+        {
+            diagnostics.RecordError("home-navigation-hide",error);
+        }
+        if(disposed||quitting||CandidateGraphicsStopped||!controller.Visible||controller.Form!=WidgetForm.Details)
+            outside.Update(null);
+        else
+            UpdateOutsideGeometry();
+    }
+    void DisposeHomeNavigationWindow()
+    {
+        var child=homeNavigation;
+        homeNavigation=null;
+        if(child is null)return;
+        try{child.Dispose();}
+        catch(Exception error){diagnostics.RecordError("home-navigation-close",error);}
+        TrackWidgetOwnedWindow(child.Handle,false);
+    }
+    void OnHomeNavigationClosed(HomeNavigationWindow child)
+    {
+        TrackWidgetOwnedWindow(child.Handle,false);
+        if(ReferenceEquals(homeNavigation,child))homeNavigation=null;
+        if(!disposed&&!quitting&&scene.HomeNavExpanded)
+        {
+            scene.SetHomeNavExpanded(false);
+            Render();
+        }
+        UpdateOutsideGeometry();
+    }
     void TrackWidgetOwnedWindow(nint hwnd,bool owned)
     {
         if(owned)
@@ -587,7 +670,7 @@ internal sealed partial class GlassDeskCoordinator
     void DisposeWidgetBoard()
     {
         CancelHomeFolderRead();
-        widgetTimer.Stop();pageSaveTimer.Stop();CloseWidgetConfiguration();
+        widgetTimer.Stop();pageSaveTimer.Stop();CloseHomeNavigationWindow();CloseWidgetConfiguration();
         foreach(var app in widgetOwnedWindows.Values)app.Changed-=OnWidgetOwnedChanged;
         widgetOwnedWindows.Clear();widgetScheduler.Updated-=OnWidgetUpdated;widgetScheduler.Dispose();
         scene.DetailsPageRequested-=SelectDetailsPage;scene.BoardViewportChanged-=OnBoardViewportChanged;

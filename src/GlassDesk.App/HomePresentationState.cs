@@ -19,7 +19,7 @@ internal sealed record HomePopupRenderKey(int Selected, string Name, string Path
     {
         HomeFolderEntry? Entry(int index) => index < preview.Entries.Count ? preview.Entries[index] : null;
         return new(selected, preview.Name, preview.Path, preview.Status, preview.Message, preview.Entries.Count,
-            Entry(0), Entry(1), Entry(2), layout.Popover, layout.FolderSlot(selected).X + 22 - layout.Popover.X,
+            Entry(0), Entry(1), Entry(2), layout.Popover, layout.DockFolder.X + 22 - layout.Popover.X,
             pressed, foreground, background, secondary, dpi, highContrast);
     }
 }

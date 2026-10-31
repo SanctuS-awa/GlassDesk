@@ -105,7 +105,9 @@ public sealed class SettingsWindow : Window, IDisposable
     SettingsPageDeck? _deck;
     SettingsCapsulePreview? _capsuleLayoutPreview;
     SettingsCapsulePreview? _clockLayoutPreview;
+    SettingsLiquidPreview? _liquidPreview;
     readonly List<(string Id, RadioButton Button)> _clockFontChoices = [];
+    readonly List<(WidgetTextInk Ink, RadioButton Button)> _textInkChoices = [];
     readonly List<Action> _switchRefresh = [];
     readonly List<RadioButton> _appearanceChoices = [];
     readonly List<(uint Color, Button Button)> _colorPresets = [];
@@ -113,6 +115,7 @@ public sealed class SettingsWindow : Window, IDisposable
     string? _pluginsKey;
     readonly TextBlock _blurLabel = Label();
     readonly TextBlock _transparencyLabel = Label();
+    TextBlock? _systemLensMaterialNote;
     readonly TextBlock _hoverLabel = Label();
     readonly TextBlock _leaveLabel = Label();
     readonly TextBlock _connection = Label();
@@ -265,6 +268,7 @@ public sealed class SettingsWindow : Window, IDisposable
         Refresh();
         AppWindow.Show();
         _shown = true;
+        _liquidPreview?.SetActive(_navigation?.SelectedItem is NavigationViewItem { Tag: 2 });
         _deck?.StopTransition();
         if (!_minimalContent) _statusTimer.Start();
         Trace("settings-appwindow-shown");
@@ -296,6 +300,7 @@ public sealed class SettingsWindow : Window, IDisposable
     {
         if (_disposed) return;
         _shown = false;
+        _liquidPreview?.SetActive(false);
         _deck?.StopTransition();
         _statusTimer.Stop();
         AppWindow.Hide();
@@ -381,7 +386,7 @@ public sealed class SettingsWindow : Window, IDisposable
         });
         var onboardingText = new StackPanel { Spacing = 4 };
         onboardingText.Children.Add(SettingsTypography.Apply(new TextBlock { Text = "使用提示" }, TextRole.CaptionSettings, InkRole.Primary));
-        onboardingText.Children.Add(Description("悬停查看歌曲，点击展开播放器。拖动空白处调整位置，点击组件外部收起。"));
+        onboardingText.Children.Add(Description("悬停查看歌曲，点击展开播放器。组件固定在主屏幕可用区域顶部居中，点击组件外部收起。"));
         Grid.SetColumn(onboardingText, 1); onboardingContent.Children.Add(onboardingText);
         var understood = new Button
         {
@@ -405,14 +410,21 @@ public sealed class SettingsWindow : Window, IDisposable
         _capsuleLayoutPreview = new SettingsCapsulePreview();
         appearance.Children.Add(_capsuleLayoutPreview);
         appearance.Children.Add(SectionHeading("材质"));
-        appearance.Children.Add(Group(SliderRow("模糊强度", _blurLabel, _blur),
-            SliderRow("透明度", _transparencyLabel, _transparency)));
+        var legacyMaterialControls = Group(SliderRow("模糊强度", _blurLabel, _blur),
+            SliderRow("透明度", _transparencyLabel, _transparency));
+        appearance.Children.Add(legacyMaterialControls);
+        _systemLensMaterialNote = Description("Liquid Glass 使用清透材质；这两项调节适用于磨砂模式。");
+        _systemLensMaterialNote.Visibility = Visibility.Collapsed;
+        appearance.Children.Add(_systemLensMaterialNote);
+        appearance.Children.Add(SectionHeading("文字颜色"));
+        appearance.Children.Add(BuildTextInkChoices());
+        appearance.Children.Add(Description("按当前桌面背景选择黑色或白色；文字颜色不会自动切换。"));
         appearance.Children.Add(SectionHeading("动态"));
         appearance.Children.Add(Group(ToggleRow("简化动画", _reducedMotion),
             ToggleRow("真实音频波浪条", _audio, "仅在展示音乐频谱时采集。")));
         appearance.Children.Add(_audioStatus);
         var restore = CommandButton("恢复默认外观", "\uE777");
-        restore.Click += (_, _) => QueuePreferences(CurrentPreferences with { Blur = 20, TintOpacity = .24f, ReducedMotion = false });
+        restore.Click += (_, _) => QueuePreferences(CurrentPreferences with { Blur = 20, TintOpacity = .24f, ReducedMotion = false, TextInk = WidgetTextInk.Black });
         appearance.Children.Add(restore);
         appearance.Children.Add(_onboarding);
 
@@ -429,17 +441,17 @@ public sealed class SettingsWindow : Window, IDisposable
             ClockShowDate = false, ClockShowWeekday = false, ClockFontId = ClockFontCatalog.System });
         time.Children.Add(restoreClock);
 
-        var interaction = Section("调整悬停、离开与全屏时的行为。");
-        interaction.Children.Add(SectionHeading("展开与收起"));
+        var interaction = Section("预览胶囊展开与收拢效果。");
+        _liquidPreview = new SettingsLiquidPreview(() => CurrentPreferences.ReducedMotion || !_uiSettings.AnimationsEnabled,
+            _coordinator.CreatePreviewGeometry,()=>WinRT.Interop.WindowNative.GetWindowHandle(this));
+        interaction.Children.Add(Surface(_liquidPreview));
+        interaction.Children.Add(SectionHeading("桌面行为"));
         interaction.Children.Add(Group(SliderRow("悬停展开延迟", _hoverLabel, _hover),
             SliderRow("离开收起延迟", _leaveLabel, _leave)));
         interaction.Children.Add(SectionHeading("专注当前任务"));
         interaction.Children.Add(Group(ToggleRow("全屏时自动隐藏", _fullscreen,
             "进入游戏或全屏视频时，暂时隐藏桌面组件。")));
-        var resetPosition = CommandButton("重置位置", "\uE7C2");
-        resetPosition.Click += (_, _) => { _coordinator.ResetPosition(); ShowFeedback("位置已重置。"); };
-        interaction.Children.Add(resetPosition);
-        interaction.Children.Add(Description("也可以直接拖动组件的空白区域。"));
+        interaction.Children.Add(Description("桌面组件固定在主屏幕可用区域顶部居中。"));
 
         var companion = Section("安静的原创小球，用表情和视线回应你。");
         companion.Children.Add(Group(ToggleRow("陪伴球", _companion, "回应指针、音乐和展开动作，并自然眨眼；隐藏时休息。"),
@@ -496,7 +508,7 @@ public sealed class SettingsWindow : Window, IDisposable
         companion.Children.Add(form); companion.Children.Add(colors);
 
         var plugins = Section("安装本地功能插件，分别控制各项贡献。");
-        plugins.Children.Add(Group(ToggleRow("液态玻璃", _liquidGlass, "为外壳加入真实背景折射；内容保持清晰。")));
+        plugins.Children.Add(Group(ToggleRow("液态玻璃", _liquidGlass, "在系统磨砂上叠加曲面高光与边缘厚度，不截取桌面。")));
         plugins.Children.Add(_liquidGlassStatus);
         var import = CommandButton("导入本地插件", "\uE898");
         import.Click += async (_, _) =>
@@ -665,7 +677,9 @@ public sealed class SettingsWindow : Window, IDisposable
     void OnNavigationSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (args.SelectedItem is not NavigationViewItem { Tag: int index }) return;
+        RefreshMaterialControls();
         _deck?.SetSelectedIndex(index);
+        _liquidPreview?.SetActive(_shown && index == 2);
         _pageTitle.Text = PageTitles[index];
         foreach (var item in _navigationItems)
         {
@@ -676,6 +690,18 @@ public sealed class SettingsWindow : Window, IDisposable
         }
         if (index == 0) _capsuleLayoutPreview?.Present(CurrentPreferences, DateTimeOffset.Now);
         if (index == TimePage) _clockLayoutPreview?.Present(CurrentPreferences, DateTimeOffset.Now);
+    }
+
+    void RefreshMaterialControls()
+    {
+        bool systemLens = _coordinator.UsesSystemCompositorLens;
+        _blur.IsEnabled = !systemLens;
+        _transparency.IsEnabled = !systemLens;
+        if (_systemLensMaterialNote is not null)
+            _systemLensMaterialNote.Visibility = systemLens ? Visibility.Visible : Visibility.Collapsed;
+        string help = systemLens ? "Liquid Glass 使用清透材质；这两项调节适用于磨砂模式。" : "";
+        AutomationProperties.SetHelpText(_blur, help);
+        AutomationProperties.SetHelpText(_transparency, help);
     }
 
     FrameworkElement BuildClockFontChoices()
@@ -702,6 +728,43 @@ public sealed class SettingsWindow : Window, IDisposable
             _clockFontChoices.Add((face.Id, choice)); choices.Add(choice);
         }
         return new SettingsColumns(choices, 4, 125);
+    }
+
+    FrameworkElement BuildTextInkChoices()
+    {
+        var choices = new List<FrameworkElement>();
+        foreach (var (ink, label, foreground, background) in new[]
+        {
+            (WidgetTextInk.Black, "黑色", 0xFF000000u, 0xFFF1F2F4u),
+            (WidgetTextInk.White, "白色", 0xFFFFFFFFu, 0xFF343840u)
+        })
+        {
+            var sample = new Border
+            {
+                Width = 42, Height = 32, CornerRadius = new CornerRadius(6),
+                Background = Brush(background), BorderBrush = Brush(BorderColor), BorderThickness = new Thickness(1),
+                Child = new TextBlock { Text = "Aa", FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = Brush(foreground), HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center }
+            };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            content.Children.Add(sample); content.Children.Add(SettingTitle(label));
+            var choice = new RadioButton
+            {
+                Content = content, GroupName = "WidgetTextInk", MinWidth = 0, MinHeight = 64,
+                HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Center,
+                Padding = new Thickness(10), CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1),
+                Template = OptionTemplate, UseSystemFocusVisuals = true
+            };
+            Name(choice, $"组件文字颜色：{label}");
+            choice.Checked += (_, _) =>
+            {
+                if (!_refreshing) QueuePreferences(CurrentPreferences with { TextInk = ink });
+            };
+            _textInkChoices.Add((ink, choice)); choices.Add(choice);
+        }
+        return new SettingsColumns(choices, 2, 130);
     }
 
     // Keep the native ToggleSwitch as the sole input/UIA/keyboard target. A
@@ -969,9 +1032,6 @@ public sealed class SettingsWindow : Window, IDisposable
         _updateCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            // Position changes belong to the coordinator and may arrive while a slider request waits.
-            var current = _coordinator.Preferences;
-            requested = requested with { MonitorId = current.MonitorId, AnchorX = current.AnchorX, AnchorY = current.AnchorY };
             var result = await _coordinator.UpdatePreferencesAsync(requested);
             LastSaveFailed = !result.Success;
             _saveHint.Text = result.Success ? "已保存至本机" : "更改尚未保存，请检查提示";
@@ -1031,6 +1091,7 @@ public sealed class SettingsWindow : Window, IDisposable
             ClockShowDate = pending.ClockShowDate != requested.ClockShowDate ? pending.ClockShowDate : actual.ClockShowDate,
             ClockShowWeekday = pending.ClockShowWeekday != requested.ClockShowWeekday ? pending.ClockShowWeekday : actual.ClockShowWeekday,
             ClockFontId = pending.ClockFontId != requested.ClockFontId ? pending.ClockFontId : actual.ClockFontId,
+            TextInk = pending.TextInk != requested.TextInk ? pending.TextInk : actual.TextInk,
             AudioVisualizationEnabled = pending.AudioVisualizationEnabled != requested.AudioVisualizationEnabled ? pending.AudioVisualizationEnabled : actual.AudioVisualizationEnabled,
             CompanionEnabled = pending.CompanionEnabled != requested.CompanionEnabled ? pending.CompanionEnabled : actual.CompanionEnabled,
             CompanionFollowMouse = pending.CompanionFollowMouse != requested.CompanionFollowMouse ? pending.CompanionFollowMouse : actual.CompanionFollowMouse,
@@ -1072,6 +1133,7 @@ public sealed class SettingsWindow : Window, IDisposable
         _refreshing = true;
         try
         {
+            RefreshMaterialControls();
             var preference = CurrentPreferences;
             _blur.Value = preference.Blur;
             _transparency.Value = Math.Round((1 - preference.TintOpacity) * 100);
@@ -1085,8 +1147,15 @@ public sealed class SettingsWindow : Window, IDisposable
                 choice.Button.BorderBrush = selected ? Brush(AccentFill) : Brush(BorderColor);
                 choice.Button.Background = selected ? Brush(0xFFEAF3FF) : Brush(ButtonColor);
             }
-            // The settings material is fixed at 0.86; the "透明度" slider still
-            // drives the widget glass through the coordinator only.
+            foreach (var choice in _textInkChoices)
+            {
+                bool selected = choice.Ink == preference.TextInk;
+                choice.Button.IsChecked = selected;
+                choice.Button.BorderBrush = selected ? Brush(AccentFill) : Brush(BorderColor);
+                choice.Button.Background = selected ? Brush(0xFFEAF3FF) : Brush(ButtonColor);
+            }
+            // These remain persisted legacy material preferences. The selected
+            // system compositor lens does not use them to render its glass.
             _audio.IsOn = preference.AudioVisualizationEnabled;
             _companion.IsOn = preference.CompanionEnabled;
             _companionFollowMouse.IsOn = preference.CompanionFollowMouse;
@@ -1112,6 +1181,7 @@ public sealed class SettingsWindow : Window, IDisposable
             _companionFollowMouse.IsEnabled = preference.CompanionEnabled;
             _capsuleLayoutPreview?.Present(preference, DateTimeOffset.Now);
             _clockLayoutPreview?.Present(preference, DateTimeOffset.Now);
+            _liquidPreview?.Present(preference);
             foreach (var updateSwitch in _switchRefresh) updateSwitch();
             RefreshCompanionPreview(preference.CompanionColor, preference.CompanionAppearanceId);
             _fullscreen.IsOn = preference.AvoidFullscreen; _startup.IsOn = preference.RunAtStartup;
@@ -1176,6 +1246,7 @@ public sealed class SettingsWindow : Window, IDisposable
         {
             if (selected == 0) _capsuleLayoutPreview?.Present(CurrentPreferences, DateTimeOffset.Now);
             if (selected == TimePage) _clockLayoutPreview?.Present(CurrentPreferences, DateTimeOffset.Now);
+            if (selected == 2) _liquidPreview?.Present(CurrentPreferences);
         }
         // Native capture advances independently of preference/scene Changed events.
         // Read its live state and map the raw native wording into user-facing
@@ -1199,7 +1270,10 @@ public sealed class SettingsWindow : Window, IDisposable
     {
         if (string.IsNullOrWhiteSpace(status)) return status;
         if (status.StartsWith("Disabled", StringComparison.Ordinal))
-            return status.Length > "Disabled".Length ? "未启用（捕捉亲和性恢复失败）" : "未启用";
+            return status.Contains("affinity",StringComparison.OrdinalIgnoreCase) ? "未启用（窗口捕获排除设置恢复失败）" : "未启用";
+        if(status.StartsWith("Tripped:",StringComparison.Ordinal))return "已熔断：材质停止，禁止自动图形重试";
+        if(status.StartsWith("Experimental:",StringComparison.Ordinal))return "实验：仅折射本地静态壁纸，不折射其他应用窗口";
+        if(status.StartsWith("Active:",StringComparison.Ordinal))return "已启用：系统磨砂与曲面光照，无桌面捕获";
         if (status.StartsWith("Starting", StringComparison.Ordinal)) return "正在启动";
         if (status.StartsWith("Running", StringComparison.Ordinal)) return "已启用";
         if (status.StartsWith("Paused", StringComparison.Ordinal)) return "已暂停：组件隐藏时保留启用意图";
@@ -1208,6 +1282,8 @@ public sealed class SettingsWindow : Window, IDisposable
             {
                 "solid/high-contrast policy; enabled intent retained" => "高对比度或实色策略；已保留启用意图",
                 "D3D material device unavailable; enabled intent retained" => "D3D 材质设备不可用；已保留启用意图",
+                "solid; wallpaper candidate unavailable or outside capsule/peek" => "静态壁纸不可用或当前不在胶囊/小展开，使用纯色材质",
+                "solid backend; no capture" => "纯色宿主，不读取桌面",
                 var other => other
             });
         if (status.StartsWith("QA", StringComparison.Ordinal)) return "已启用（QA 快照）";
@@ -1603,6 +1679,7 @@ public sealed class SettingsWindow : Window, IDisposable
         if (_disposed) return;
         _disposed = true;
         _shown = false;
+        _liquidPreview?.Dispose();
         _deck?.StopTransition();
         if (_navigation is not null) _navigation.SelectionChanged -= OnNavigationSelectionChanged;
         _changeTimer.Stop();

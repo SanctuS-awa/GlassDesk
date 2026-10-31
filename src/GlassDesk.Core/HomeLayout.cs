@@ -2,11 +2,7 @@ using System.Numerics;
 
 namespace GlassDesk.Core;
 
-/// <summary>
-/// Pure geometry for the new Home page (360×512): a sparse 4×3 grid of external
-/// shortcuts, a 2×2 arc navigation card in the bottom-right cells, a folder-only dock
-/// at the bottom and the folder popover that hangs above it.
-/// </summary>
+/// <summary>Legacy grid geometry retained for older layout helpers. Runtime Dock geometry is in HomePresentationLayout.</summary>
 public static class HomeLayout
 {
     public const float Width = 360, Height = 512;

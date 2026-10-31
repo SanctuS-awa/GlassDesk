@@ -71,7 +71,8 @@ public sealed class OutsidePointerObserver : IDisposable
                 if(state?.IsOutsidePress(mouse.X,mouse.Y)==true)
                 {
                     var press=new OutsidePointerPress(state.OpenSequence,state.GeometryVersion,mouse.X,mouse.Y,
-                        message==0x201?OutsidePointerButton.Left:message==0x204?OutsidePointerButton.Right:OutsidePointerButton.Middle,(mouse.Flags&1)!=0);
+                        message==0x201?OutsidePointerButton.Left:message==0x204?OutsidePointerButton.Right:OutsidePointerButton.Middle,
+                        (mouse.Flags&1)!=0,state.IsOutsideRegisteredRegion(mouse.X,mouse.Y),state.IsOutsideDismissRegion(mouse.X,mouse.Y));
                     dispatcher.TryEnqueue(()=>notify(press));
                 }
             }

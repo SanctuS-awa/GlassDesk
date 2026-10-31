@@ -25,18 +25,20 @@ internal sealed class ResidencyProbe : IDisposable
     readonly bool stressEnabled;
     readonly Func<object>? typography;
     readonly Func<object>? materialReadability;
+    readonly Func<object>? desktopMaterial;
+    readonly bool capsulePeekSmoke;
     [DllImport("user32.dll")] static extern uint GetGuiResources(nint processHandle,uint flag);
     [DllImport("user32.dll")] static extern nint GetForegroundWindow();
-    public ResidencyProbe(DispatcherQueue queue,WidgetController controller,Func<double> clock,Action wake,string path,int cycles,Func<object>? typography=null,Func<object>? materialReadability=null)
+    public ResidencyProbe(DispatcherQueue queue,WidgetController controller,Func<double> clock,Action wake,string path,int cycles,Func<object>? typography=null,Func<object>? materialReadability=null,bool capsulePeekSmoke=false,Func<object>? desktopMaterial=null)
     {
-        this.controller=controller;this.clock=clock;this.wake=wake;this.path=path;this.typography=typography;this.materialReadability=materialReadability;remaining=cycles;stressEnabled=cycles>0;
+        this.controller=controller;this.clock=clock;this.wake=wake;this.path=path;this.typography=typography;this.materialReadability=materialReadability;remaining=cycles;stressEnabled=cycles>0;this.capsulePeekSmoke=capsulePeekSmoke;this.desktopMaterial=desktopMaterial;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        sampleTimer=queue.CreateTimer();sampleTimer.Interval=TimeSpan.FromSeconds(30);sampleTimer.Tick+=(_,_)=>Sample();
-        cycleTimer=queue.CreateTimer();cycleTimer.Interval=TimeSpan.FromMilliseconds(70);
+        sampleTimer=queue.CreateTimer();sampleTimer.Interval=TimeSpan.FromSeconds(capsulePeekSmoke?2:30);sampleTimer.Tick+=(_,_)=>Sample();
+        cycleTimer=queue.CreateTimer();cycleTimer.Interval=capsulePeekSmoke?TimeSpan.FromSeconds(12):TimeSpan.FromMilliseconds(70);
         cycleTimer.Tick+=(_,_)=>
         {
             if(remaining<=0) {cycleTimer.Stop();controller.ChangeForm(WidgetForm.Capsule,clock());wake();Sample();return;}
-            controller.ChangeForm((WidgetForm)((completed+1)%3),clock());remaining--;completed++;wake();
+            controller.ChangeForm(capsulePeekSmoke?(completed%2==0?WidgetForm.Peek:WidgetForm.Capsule):(WidgetForm)((completed+1)%3),clock());remaining--;completed++;wake();
         };
         Sample();sampleTimer.Start();if(cycles>0)cycleTimer.Start();
     }
@@ -67,7 +69,7 @@ internal sealed class ResidencyProbe : IDisposable
         object? textDiagnostics=null;
         try{textDiagnostics=typography?.Invoke();}
         catch(Exception error){textDiagnostics=new {Error=error.GetType().Name,HResult=error.HResult};}
-        File.WriteAllText(temporary,JsonSerializer.Serialize(new {SchemaVersion=3,Test=stressEnabled?"resident resources and application-driven form stress":"normal runtime observation (no stress)",Pid=process.Id,ElapsedSeconds=seconds,CompletedFormTransitions=completed,SystemSettingsChanged=false,MediaTestSource=false,Samples=samples,PointerEvents=pointers,ContentEvents=contents,Typography=textDiagnostics,MaterialReadability=materialReadability?.Invoke()},new JsonSerializerOptions {WriteIndented=true}));
+        File.WriteAllText(temporary,JsonSerializer.Serialize(new {SchemaVersion=3,Test=capsulePeekSmoke?"authorized 60-second capsule/peek smoke (4 slow transitions)":stressEnabled?"resident resources and application-driven form stress":"normal runtime observation (no stress)",Pid=process.Id,ElapsedSeconds=seconds,CompletedFormTransitions=completed,SystemSettingsChanged=false,MediaTestSource=false,Samples=samples,PointerEvents=pointers,ContentEvents=contents,Typography=textDiagnostics,MaterialReadability=materialReadability?.Invoke(),DesktopMaterial=desktopMaterial?.Invoke()},new JsonSerializerOptions {WriteIndented=true}));
         File.Move(temporary,path,true);
     }
     public void Dispose() {sampleTimer.Stop();cycleTimer.Stop();Sample();process.Dispose();}

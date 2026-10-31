@@ -9,8 +9,9 @@ using Windows.UI.ViewManagement;
 namespace GlassDesk.App;
 
 /// <summary>
-/// Details chrome: the top companion home handle (return to the time capsule) and the
-/// bottom five-destination floating dock. All foreground content is a small set of
+/// Details chrome: the top companion home handle (return to the time capsule) and a
+/// legacy bottom five-destination dock, retained internally but hidden by the current
+/// Home and Music navigation. All foreground content is a small set of
 /// cached pixel surfaces; they are redrawn only when selection, hover, high contrast or
 /// DPI changes. Motion is pure composition (no per-frame tick) except the transient
 /// preview highlight, which returns to the real page after a short deadline.
@@ -47,11 +48,12 @@ internal sealed class DetailsChromeVisual : IDisposable
     readonly SpriteVisual _dock;
     readonly CompositionSurfaceBrush _dockBrush;
     CompositionDrawingSurface? _dockSurface;
-    (bool HighContrast, uint Dpi, bool LightInk)? _dockKey;
+    (bool HighContrast, uint Dpi, bool LightInk, float Tint)? _dockKey;
 
     readonly SpriteVisual _dockIcons;
     readonly CompositionSurfaceBrush _dockIconsBrush;
     CompositionDrawingSurface? _dockIconsSurface;
+    SystemGlassInkVisual? _adaptiveDockInk;
     (bool HighContrast, uint Dpi, bool LightInk, int Index)? _dockIconsKey;
 
     readonly SpriteVisual _dockActive;
@@ -78,8 +80,9 @@ internal sealed class DetailsChromeVisual : IDisposable
     int _hoverIndex = -1;
     bool _hoverHome, _pressedHome, _active, _reducedMotion, _disposed;
     bool _lightInk;
-    // The home page owns the bottom strip with its folder dock, so the five-slot chrome
-    // dock is hidden (and removed from hit-testing/accessibility) while it is shown.
+    float _materialTintOpacity;
+    // The current Home Dock replaces the legacy five-slot dock. Keep all of its routes
+    // hidden from rendering, hit-testing, and accessibility.
     bool _dockVisible = true;
     uint _homeColor = 0xff202329;
     int _pressedIndex = -1;
@@ -274,6 +277,16 @@ internal sealed class DetailsChromeVisual : IDisposable
         Present();
     }
 
+    public void SetMaterialTint(float tint)
+    {
+        if (_disposed) return;
+        float normalized = float.IsFinite(tint) ? Math.Clamp(tint, 0, 1) : 0;
+        if (_materialTintOpacity == normalized) return;
+        _materialTintOpacity = normalized;
+        _dockKey = null;
+        Present();
+    }
+
     /// <summary>The top handle is the companion, so it adopts the user's companion colour.</summary>
     public void SetCompanionColor(uint color)
     {
@@ -360,7 +373,7 @@ internal sealed class DetailsChromeVisual : IDisposable
         PresentSelection();
     }
 
-    /// <summary>Hides the five-slot chrome dock on the Home page without touching the handle.</summary>
+    /// <summary>Shows or hides the legacy five-slot dock without touching the home handle.</summary>
     public void SetDockVisible(bool visible)
     {
         if (_disposed || _dockVisible == visible) return;
@@ -473,13 +486,16 @@ internal sealed class DetailsChromeVisual : IDisposable
 
     void RefreshDockSurface(bool highContrast, uint dpi)
     {
-        var key = (highContrast, dpi, _lightInk);
+        var key = (highContrast, dpi, _lightInk, _materialTintOpacity);
         if (_dockKey == key) return;
         _dockKey = key;
         var operations = new List<SurfaceOp>(2);
         // One material family with the card: a translucent film, never a black bar.
         uint fill = highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.Window))
             : _lightInk ? 0x1CFFFFFFu : 0x1420252Cu;
+        // Manual foreground ink does not require an opaque contrast platform.
+        // Keep the existing thin navigation film and the system high-contrast
+        // fallback, rather than a second readability cloud over the main glass.
         operations.Add(Round(0, 0, DetailsChromeLayout.DockWidth, DetailsChromeLayout.DockHeight,
             DetailsChromeLayout.DockRadius, fill));
         if (!highContrast)
@@ -507,10 +523,13 @@ internal sealed class DetailsChromeVisual : IDisposable
                 : entry.IsPage
                     ? _lightInk ? 0xC6F8FAFCu : 0xB020252Cu
                     : _lightInk ? 0x5CFFFFFFu : 0x5520252Cu;
+            if (!highContrast && _host.IsSystemCompositorCandidate && entry.IsPage)
+                color = TypographyCatalog.Ink(InkRole.Primary, _lightInk);
             float center = DetailsChromeLayout.DockItemWidth * (index + .5f);
             operations.Add(IconOp(GlyphFor(entry.Id), center - DockIconSize / 2,
                 (DetailsChromeLayout.DockHeight - DockIconSize) / 2, DockIconSize, color));
         }
+        _adaptiveDockInk?.Dispose();
         Replace(ref _dockIconsSurface, _dockIconsBrush,
             _host.RenderSurface(DetailsChromeLayout.DockWidth, DetailsChromeLayout.DockHeight, operations));
     }
@@ -526,7 +545,7 @@ internal sealed class DetailsChromeVisual : IDisposable
             _dockActiveKey = key;
             var entry = DetailsDockItems.All[index];
             uint fill = highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.Highlight))
-                : _lightInk ? 0x3AFFFFFFu : 0x2620252Cu;
+                : _host.IsSystemCompositorCandidate ? _lightInk ? 0x26FFFFFFu : 0x1820252Cu : _lightInk ? 0x3AFFFFFFu : 0x2620252Cu;
             uint ink = highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.HighlightText))
                 : _lightInk ? 0xFFF8FAFCu : 0xFF20252Cu;
             var operations = new List<SurfaceOp>(2)
@@ -744,10 +763,20 @@ internal sealed class DetailsChromeVisual : IDisposable
         old?.Dispose();
     }
 
+    public void ApplySystemInk(bool enabled)
+    {
+        if(!_host.IsSystemCompositorCandidate)return;
+        _adaptiveDockInk??=new(_host,_dockIcons,_dockIconsBrush);
+        var offset=_visual.Offset+_dockIcons.Offset;
+        _adaptiveDockInk.Update(_dockIconsSurface,new(offset.X,offset.Y),_dockIcons.Size,
+            enabled&&_dockVisible&&!_accessibility.HighContrast);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+        _adaptiveDockInk?.Dispose();_adaptiveDockInk=null;
         PageRequested = null;
         _visual.Children.RemoveAll();
         _homeLabelBrush.Surface = _dockBrush.Surface = _dockIconsBrush.Surface = _dockActiveBrush.Surface

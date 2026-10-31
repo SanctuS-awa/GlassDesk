@@ -16,7 +16,12 @@
     <ApplicationIcon>Assets\GlassDesk.ico</ApplicationIcon>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <DefineConstants Condition="'$(GlassDeskUiPreview)'=='true'">$(DefineConstants);GLASSDESK_UI_PREVIEW</DefineConstants>
+    <DefineConstants Condition="'$(GlassDeskUiPreview)'=='true' and '$(GlassDeskSystemGlassPreview)'=='true'">$(DefineConstants);GLASSDESK_SYSTEM_GLASS_PREVIEW</DefineConstants>
   </PropertyGroup>
+  <Target Name="ValidateSystemGlassPreviewBuild" BeforeTargets="PrepareForBuild"
+          Condition="'$(GlassDeskSystemGlassPreview)'=='true' and '$(GlassDeskUiPreview)'!='true'">
+    <Error Text="GlassDeskSystemGlassPreview is available only in a GlassDeskUiPreview build." />
+  </Target>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <ProjectReference Include="..\GlassDesk.Core\GlassDesk.Core.csproj" />
@@ -27,6 +32,8 @@
   <ItemGroup>
     <Content Include="Assets\GlassDesk-logo.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\GlassDesk.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\HomeMusic.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\HomeBrowser.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Unpackaged MRT Core generates these resources but does not add them to
        dotnet publish. Keep the actual publish output complete, not only bin. -->

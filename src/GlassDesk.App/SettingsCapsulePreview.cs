@@ -10,12 +10,12 @@ using Path = Microsoft.UI.Xaml.Shapes.Path;
 
 namespace GlassDesk.App;
 
-/// <summary>Layout sample using the real 200×52 clock geometry and shared round character contour.
-/// It owns no capture, compositor, timer or player; the actual desktop remains the material preview.</summary>
+/// <summary>Layout-only sample on a controlled background. It does not mirror the desktop material.</summary>
 internal sealed class SettingsCapsulePreview : Grid
 {
     readonly Canvas _canvas = new() { Width = 200, Height = 52 };
-    readonly Border _shell = new() { Width = 200, Height = 52, CornerRadius = new CornerRadius(26) };
+    readonly Border _shell = new() { Width = 200, Height = 52,
+        HorizontalAlignment = HorizontalAlignment.Center, CornerRadius = new CornerRadius(26) };
     readonly Path _body = new();
     readonly Border[] _eyes = [new(), new()];
     readonly TextBlock _clock = new(), _aux = new();
@@ -27,22 +27,22 @@ internal sealed class SettingsCapsulePreview : Grid
         var high = new AccessibilitySettings().HighContrast;
         var colors = new UISettings();
         Background = PreviewBackground(high, colors);
+        _shell.Background = PreviewSampleBackground(high, colors, WidgetTextInk.Black);
         var layout = new Grid { RowSpacing = 12 };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var label = SettingsTypography.Apply(new TextBlock { Text = "组件布局预览" }, TextRole.Caption, InkRole.Secondary);
+        var label = SettingsTypography.Apply(new TextBlock { Text = "组件布局示意" }, TextRole.Caption, InkRole.Secondary);
         layout.Children.Add(label);
-        var sample = new Grid { HorizontalAlignment = HorizontalAlignment.Center, Width = 200, Height = 52 };
         _canvas.Children.Add(_body);
         foreach (var eye in _eyes) _canvas.Children.Add(eye);
         _canvas.Children.Add(_clock); _canvas.Children.Add(_aux);
-        _shell.Child = _canvas; sample.Children.Add(_shell); Grid.SetRow(sample, 1); layout.Children.Add(sample);
-        var note = SettingsTypography.Apply(new TextBlock { Text = "陪伴与时间，安静地待在桌面。",
+        _shell.Child = _canvas; Grid.SetRow(_shell, 1); layout.Children.Add(_shell);
+        var note = SettingsTypography.Apply(new TextBlock { Text = "样板背景只辅助查看手动文字颜色；实际材质以桌面组件为准。",
             TextWrapping = TextWrapping.Wrap }, TextRole.Caption, InkRole.Secondary);
         Grid.SetRow(note, 2); layout.Children.Add(note); Children.Add(layout);
         IsHitTestVisible = false;
-        AutomationProperties.SetName(this, "组件布局预览，圆形陪伴球在时间左侧");
+        AutomationProperties.SetName(this, "组件布局示意，样板背景不代表桌面材质，圆形陪伴球在时间左侧");
     }
 
     public void Present(WidgetPreferences preferences, DateTimeOffset now)
@@ -52,11 +52,10 @@ internal sealed class SettingsCapsulePreview : Grid
         if (_key == key) return; _key = key;
         var system = new UISettings();
         Background = PreviewBackground(high, system);
+        _shell.Background = PreviewSampleBackground(high, system, preferences.TextInk);
         uint color = preferences.CompanionColor;
         Color body = high ? system.UIElementColor(UIElementType.WindowText)
             : Color.FromArgb(255, (byte)(color >> 16), (byte)(color >> 8), (byte)color);
-        _shell.Background = new SolidColorBrush(high ? system.UIElementColor(UIElementType.Window)
-            : Color.FromArgb((byte)Math.Round(preferences.TintOpacity * 255), 250, 250, 250));
         var points = CompanionContour.GetPoints(preferences.CompanionAppearanceId, CompanionShapePose.Rounded);
         const double scale = 32d / 24;
         var figure = new PathFigure { IsClosed = true, IsFilled = true,
@@ -88,6 +87,16 @@ internal sealed class SettingsCapsulePreview : Grid
         SettingsTypography.Apply(_aux, TextRole.ClockLegacyAux, InkRole.Secondary);
         _clock.Text = primary; _aux.Text = auxiliary;
         SettingsTypography.SetClockFamily(_clock, preferences.ClockShowTime ? preferences.ClockFontId : null);
+        if (!high)
+        {
+            bool light = preferences.TextInk == WidgetTextInk.White;
+            uint primaryInk = TypographyCatalog.Ink(InkRole.Primary, light);
+            uint secondaryInk = TypographyCatalog.Ink(InkRole.Secondary, light);
+            _clock.Foreground = new SolidColorBrush(Color.FromArgb(255,
+                (byte)(primaryInk >> 16), (byte)(primaryInk >> 8), (byte)primaryInk));
+            _aux.Foreground = new SolidColorBrush(Color.FromArgb(255,
+                (byte)(secondaryInk >> 16), (byte)(secondaryInk >> 8), (byte)secondaryInk));
+        }
         double left = preferences.CompanionEnabled ? 56 : 16, width = 200 - left - 16;
         _clock.Width = _aux.Width = width; _clock.Height = secondary ? 27 : 32; _aux.Height = 16;
         _clock.TextAlignment = _aux.TextAlignment = TextAlignment.Center;
@@ -99,6 +108,16 @@ internal sealed class SettingsCapsulePreview : Grid
     static Brush PreviewBackground(bool high, UISettings system)
     {
         if (high) return new SolidColorBrush(system.UIElementColor(UIElementType.Window));
+        return new LinearGradientBrush { StartPoint = new(0, 0), EndPoint = new(1, 1),
+            GradientStops = { new GradientStop { Offset = 0, Color = Color.FromArgb(255, 220, 231, 247) },
+                new GradientStop { Offset = 1, Color = Color.FromArgb(255, 242, 233, 237) } } };
+    }
+
+    static Brush PreviewSampleBackground(bool high, UISettings system, WidgetTextInk ink)
+    {
+        if (high) return new SolidColorBrush(system.UIElementColor(UIElementType.Window));
+        if (ink == WidgetTextInk.White)
+            return new SolidColorBrush(Color.FromArgb(255, 66, 76, 89));
         return new LinearGradientBrush { StartPoint = new(0, 0), EndPoint = new(1, 1),
             GradientStops = { new GradientStop { Offset = 0, Color = Color.FromArgb(255, 220, 231, 247) },
                 new GradientStop { Offset = 1, Color = Color.FromArgb(255, 242, 233, 237) } } };

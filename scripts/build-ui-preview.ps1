@@ -1,18 +1,45 @@
 [CmdletBinding()]
-param([string]$CompilerPath='')
+param(
+    [string]$CompilerPath='',
+    [switch]$RunChecks,
+    [string]$IndependentTestMachineName,
+    [string]$CandidateId
+)
 
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $taskRoot=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\','/')
 $taskVersion='0.3.0-preview.1'
-$taskNative=Join-Path $taskRoot "artifacts/native-ui-preview/$taskVersion"
-$taskPublish=Join-Path $taskRoot "artifacts/ui-preview/$taskVersion"
+$taskIncidentHost='SHENG-AWA'
+if(!$CandidateId){$CandidateId=[Guid]::NewGuid().ToString('N')}
+if($CandidateId -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,54}[A-Za-z0-9])?$'){throw 'CandidateId must be 1-56 allowed characters and start and end with a letter or digit.'}
+if($RunChecks){
+    if(!$IndependentTestMachineName){throw 'RunChecks requires -IndependentTestMachineName with the target machine name.'}
+    $taskMachine=[Environment]::MachineName
+    if([StringComparer]::OrdinalIgnoreCase.Equals($taskMachine,$taskIncidentHost)){throw "Graphical and native checks are disabled on the incident host $taskIncidentHost."}
+    if(![StringComparer]::OrdinalIgnoreCase.Equals($taskMachine,$IndependentTestMachineName)){throw "Declared test machine '$IndependentTestMachineName' does not match this machine '$taskMachine'. Run checks on the named independent test machine."}
+}elseif($IndependentTestMachineName){throw '-IndependentTestMachineName is only valid with -RunChecks.'}
+
+$taskNative=Join-Path $taskRoot "artifacts/native-candidates/ui-$CandidateId"
+$taskPublish=Join-Path $taskRoot "artifacts/ui-preview-candidates/$taskVersion/$CandidateId"
 $taskData=Join-Path $taskRoot "artifacts/ui-preview-data/$taskVersion"
-$taskQa=Join-Path $taskRoot "artifacts/qa/ui-$taskVersion"
-$taskRelease=Join-Path $taskRoot "artifacts/release/$taskVersion"
+$taskQa=Join-Path $taskRoot "artifacts/qa/ui-preview-candidates/$CandidateId"
+$taskRelease=Join-Path $taskRoot "artifacts/release/ui-preview-candidates/$CandidateId"
 $taskFormal=Join-Path $taskRoot 'artifacts/release/0.2.0'
 if(!$CompilerPath){$CompilerPath=Join-Path $taskRoot '.tools/innosetup-7.1.0/ISCC.exe'}
 if(!(Test-Path -LiteralPath $CompilerPath -PathType Leaf)){throw 'Inno Setup compiler not found; pass -CompilerPath.'}
+
+function Get-ExistingPathAttributes([string]$Path){
+    $taskAttributes=$null
+    try{$taskAttributes=[IO.File]::GetAttributes($Path)}
+    catch [IO.FileNotFoundException]{}
+    catch [IO.DirectoryNotFoundException]{}
+    $taskEntry=Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if($taskEntry -and ($taskEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)){return $taskEntry.Attributes}
+    if($null -ne $taskAttributes){return $taskAttributes}
+    if($taskEntry){return $taskEntry.Attributes}
+    return $null
+}
 
 function Assert-PreviewPath([string]$Path,[string]$Expected){
     $taskFull=[IO.Path]::GetFullPath($Path).TrimEnd('\','/')
@@ -20,11 +47,26 @@ function Assert-PreviewPath([string]$Path,[string]$Expected){
     if(![StringComparer]::OrdinalIgnoreCase.Equals($taskFull,$taskExact) -or !$taskFull.StartsWith($taskRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw "Unsafe preview output: $Path"}
     $taskAncestor=$taskFull
     while(![StringComparer]::OrdinalIgnoreCase.Equals($taskAncestor,$taskRoot)){
-        if((Test-Path -LiteralPath $taskAncestor) -and ((Get-Item -LiteralPath $taskAncestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw "Preview output passes through a reparse point: $taskAncestor"}
+        $taskAttributes=Get-ExistingPathAttributes $taskAncestor
+        if($null -ne $taskAttributes -and ($taskAttributes -band [IO.FileAttributes]::ReparsePoint)){throw "Preview output passes through a reparse point: $taskAncestor"}
         $taskAncestor=[IO.Path]::GetDirectoryName($taskAncestor)
         if(!$taskAncestor){throw "Preview output escaped GlassDesk: $Path"}
     }
     return $taskFull
+}
+
+function New-CandidateDirectory([string]$Path){
+    $taskFull=Assert-PreviewPath $Path $Path
+    if($null -ne (Get-ExistingPathAttributes $taskFull)){throw "Candidate output already exists; refusing to overwrite it: $taskFull"}
+    $taskParent=[IO.Path]::GetDirectoryName($taskFull)
+    [void](Assert-PreviewPath $taskParent $taskParent)
+    if($null -eq (Get-ExistingPathAttributes $taskParent)){
+        New-Item -ItemType Directory -Path $taskParent -Force -ErrorAction Stop | Out-Null
+    }
+    [void](Assert-PreviewPath $taskParent $taskParent)
+    if($null -ne (Get-ExistingPathAttributes $taskFull)){throw "Candidate output appeared before creation; refusing to overwrite it: $taskFull"}
+    New-Item -ItemType Directory -Path $taskFull -ErrorAction Stop | Out-Null
+    [void](Assert-PreviewPath $taskFull $taskFull)
 }
 
 function Get-FileManifest([string]$Root,[System.IO.FileInfo[]]$Files){
@@ -82,9 +124,12 @@ function New-VerifiedZip([string]$Path,[string]$Root,[IO.FileInfo[]]$Files){
     }finally{$taskZip.Dispose()}
 }
 
-foreach($taskExpected in @($taskNative,$taskPublish,$taskData,$taskQa,$taskRelease)){
+foreach($taskExpected in @($taskNative,$taskPublish,$taskQa,$taskRelease)){
     [void](Assert-PreviewPath $taskExpected $taskExpected)
-    New-Item -ItemType Directory -Path $taskExpected -Force | Out-Null
+    if($null -ne (Get-ExistingPathAttributes $taskExpected)){throw "Candidate output already exists; refusing to overwrite it: $taskExpected"}
+}
+foreach($taskExpected in @($taskPublish,$taskQa,$taskRelease)){
+    New-CandidateDirectory $taskExpected
 }
 if(!(Test-Path -LiteralPath $taskFormal -PathType Container)){throw 'The protected 0.2.0 release baseline is missing.'}
 $taskFormalBefore=Get-FileManifest $taskFormal @(Get-ChildItem -LiteralPath $taskFormal -File -Recurse -Force)
@@ -97,25 +142,14 @@ $taskStarted=[DateTimeOffset]::UtcNow.ToString('O')
 
 Push-Location -LiteralPath $taskRoot
 try{
-    $taskLivePreview=@(Get-Process -Name GlassDesk -ErrorAction SilentlyContinue | Where-Object {
-        try {[StringComparer]::OrdinalIgnoreCase.Equals($_.Path,(Join-Path $taskPublish 'GlassDesk.exe'))}catch{$false}
-    })
-    if($taskLivePreview.Count){throw 'This preview runtime is still running. Exit only its own preview instance before rebuilding; output was not cleaned.'}
-    # Clean only this preview's generated runtime files. Preserve any portable
-    # preview-data alongside the executable and the fixed development data root.
-    foreach($taskOldOutput in (Get-ChildItem -LiteralPath $taskPublish -Force)){
-        if($taskOldOutput.Name -eq 'preview-data'){continue}
-        $taskRemove=[IO.Path]::GetFullPath($taskOldOutput.FullName)
-        if(!$taskRemove.StartsWith($taskPublish+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing to clean outside the exact preview runtime directory.'}
-        [void](Assert-PreviewPath $taskRemove $taskRemove)
-        Remove-Item -LiteralPath $taskRemove -Recurse -Force
-    }
     $taskSdk=& dotnet --version
     if($LASTEXITCODE -ne 0 -or $taskSdk.Trim() -ne '10.0.401'){throw 'The pinned .NET SDK 10.0.401 is required.'}
     $taskSdk | Set-Content -LiteralPath (Join-Path $taskQa 'preview-build-sdk.txt') -Encoding utf8
-    & (Join-Path $PSScriptRoot 'build-native.ps1') -Configuration Release -BuildRegression -OutputDirectory $taskNative 2>&1 | Tee-Object -FilePath (Join-Path $taskQa 'preview-build-native.log')
+    $taskNativeBuildArgs=@('-Configuration','Release','-OutputDirectory',$taskNative)
+    if($RunChecks){$taskNativeBuildArgs+='-BuildRegression'}
+    & (Join-Path $PSScriptRoot 'build-native.ps1') @taskNativeBuildArgs 2>&1 | Tee-Object -FilePath (Join-Path $taskQa 'preview-build-native.log')
     if($LASTEXITCODE -ne 0){throw 'Preview native build failed. See preview-build-native.log.'}
-    Invoke-PreviewTool -FilePath (Join-Path $taskNative 'GlassDesk.NativeRegression.exe') -Arguments @() -LogName 'preview-build-native-hidden.log'
+    if($RunChecks){Invoke-PreviewTool -FilePath (Join-Path $taskNative 'GlassDesk.NativeRegression.exe') -Arguments @() -LogName 'preview-build-native-check.log'}
     $taskNativeProperty="-p:GlassDeskNativeDirectory=$taskNative"
     $taskVersionProperty="-p:Version=$taskVersion"
     $taskSerial=@('-m:1','-p:BuildInParallel=false')
@@ -127,17 +161,17 @@ try{
         $taskProject="./tests/$taskCheck/$taskCheck.csproj"
         Invoke-PreviewTool 'dotnet' (@('restore',$taskProject,'--locked-mode',$taskNativeProperty)+$taskSerial) "preview-restore-$taskCheck.log"
         Invoke-PreviewTool 'dotnet' (@('build',$taskProject,'-c','Release','--no-restore',$taskNativeProperty)+$taskSerial) "preview-build-$taskCheck.log"
-        Invoke-PreviewTool 'dotnet' @('run','--project',$taskProject,'-c','Release','--no-build','--no-restore') "preview-check-$taskCheck.log"
+        if($RunChecks){Invoke-PreviewTool 'dotnet' @('run','--project',$taskProject,'-c','Release','--no-build','--no-restore') "preview-check-$taskCheck.log"}
     }
     Invoke-PreviewTool 'dotnet' (@('publish','./src/GlassDesk.App/GlassDesk.App.csproj','-c','Release','-r','win-x64','--self-contained','true','--no-restore','-p:GlassDeskUiPreview=true',$taskVersionProperty,$taskNativeProperty,'-p:PublishSingleFile=false','-p:PublishTrimmed=false','-o',$taskPublish)+$taskSerial) 'preview-publish.log'
 
-    foreach($taskRequired in @('GlassDesk.exe','GlassDesk.dll','GlassDesk.Core.dll','GlassDesk.Platform.dll','GlassDesk.NativeBridge.dll','GlassDesk.Plugins.dll','GlassDesk.Native.dll','GlassDesk.CaptureWorker.exe','GlassDesk.pri','App.xbf','GlassDesk.deps.json','GlassDesk.runtimeconfig.json','WinRT.Runtime.dll','Microsoft.ui.xaml.dll','Microsoft.UI.pri','Microsoft.WindowsAppRuntime.dll','Microsoft.WindowsAppRuntime.Bootstrap.dll','coreclr.dll','hostfxr.dll','hostpolicy.dll')){
+    foreach($taskRequired in @('GlassDesk.exe','GlassDesk.dll','GlassDesk.Core.dll','GlassDesk.Platform.dll','GlassDesk.NativeBridge.dll','GlassDesk.Plugins.dll','GlassDesk.Native.dll','GlassDesk.pri','App.xbf','GlassDesk.deps.json','GlassDesk.runtimeconfig.json','WinRT.Runtime.dll','Microsoft.ui.xaml.dll','Microsoft.UI.pri','Microsoft.WindowsAppRuntime.dll','Microsoft.WindowsAppRuntime.Bootstrap.dll','coreclr.dll','hostfxr.dll','hostpolicy.dll')){
         $taskRequiredFile=Join-Path $taskPublish $taskRequired
         if(!(Test-Path -LiteralPath $taskRequiredFile -PathType Leaf) -or (Get-Item -LiteralPath $taskRequiredFile).Length -le 0){throw "Incomplete UI Preview runtime: $taskRequired"}
     }
     [void](Get-Content -LiteralPath (Join-Path $taskPublish 'GlassDesk.deps.json') -Raw | ConvertFrom-Json)
     [void](Get-Content -LiteralPath (Join-Path $taskPublish 'GlassDesk.runtimeconfig.json') -Raw | ConvertFrom-Json)
-    foreach($taskNativeFile in @('GlassDesk.Native.dll','GlassDesk.CaptureWorker.exe')){
+    foreach($taskNativeFile in @('GlassDesk.Native.dll')){
         if((Get-FileHash -LiteralPath (Join-Path $taskNative $taskNativeFile)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $taskPublish $taskNativeFile)).Hash){throw "Publish used the wrong native output: $taskNativeFile"}
     }
     $taskProductVersion=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $taskPublish 'GlassDesk.dll')).ProductVersion
@@ -164,11 +198,12 @@ if($Quit){$previewArguments+='--quit'}
 [CmdletBinding()]
 param([switch]$Quit)
 $ErrorActionPreference='Stop'
-$previewData=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../ui-preview-data/0.3.0-preview.1'))
-$previewLauncher=Join-Path $PSScriptRoot '0.3.0-preview.1/Start-GlassDeskUiPreview.ps1'
+$previewData=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../ui-preview-data/0.3.0-preview.1'))
+$previewLauncher=Join-Path $PSScriptRoot '../../../ui-preview-candidates/0.3.0-preview.1/<candidate>/Start-GlassDeskUiPreview.ps1'
 & $previewLauncher -DataDirectory $previewData -Quit:$Quit
 '@
-    Set-Content -LiteralPath (Join-Path (Split-Path -Parent $taskPublish) 'Start-GlassDeskUiPreview.ps1') -Value $taskDevelopmentLauncher -Encoding utf8
+    $taskDevelopmentLauncher=$taskDevelopmentLauncher.Replace('0.3.0-preview.1/<candidate>',$taskVersion+'/'+$CandidateId)
+    Set-Content -LiteralPath (Join-Path $taskRelease 'Start-GlassDeskUiPreview.from-source.ps1') -Value $taskDevelopmentLauncher -Encoding utf8
     $taskReadme=@'
 # GlassDesk 0.3.0-preview.1 · UI Preview
 
@@ -188,23 +223,29 @@ The installer retains ./preview-data when uninstalling. AcceptanceReport.md is
 distributed beside the installer and inside the portable ZIP, not embedded in
 the installer, so final acceptance updates do not change tested installer bytes.
 
-In the source checkout, artifacts/ui-preview/Start-GlassDeskUiPreview.ps1 uses
+In the source checkout, artifacts/ui-preview-candidates/0.3.0-preview.1/<candidate>/Start-GlassDeskUiPreview.from-source.ps1 uses
 artifacts/ui-preview-data/0.3.0-preview.1. No existing preview data, personal song
 history, accounts, formal configuration, or generated test data is included in
 the ZIP. Windows 11 x64 is required; the runtime is self-contained and must stay
-together with its PRI, XBF, native DLL, capture worker, and dependency files.
+together with its PRI, XBF, native DLL, and dependency files.
 
-The optional liquid material remains off by default and uses the existing WGC
-worker and GPU path. Capture exclusion can hide the widget in external screen
-captures. Material diagnostics and final UI screenshots are different evidence.
+The optional liquid material remains off by default and does not sample the
+desktop. The system backdrop uses the Windows compositor with procedural
+highlights. An explicitly authorized static-wallpaper experiment uses one
+wallpaper file only; it does not refract changing windows and is not evidence of
+a real-time desktop lens.
 
-Automated build/check logs are recorded separately under artifacts/qa. Building
-or packaging does not prove native pointer behavior, appearance on three desktop
+Build and optional check logs are recorded separately under artifacts/qa. The
+build is compile-only by default; native and managed checks run only when explicitly
+requested on a declared independent test machine. Building does not prove native pointer behavior, appearance on three desktop
 backgrounds, resource residency, real mixed DPI, sleep, or device removal. Consult
 AcceptanceReport.md when supplied; any unmeasured or failing cases stay explicit.
 release-verification.json links the exact source ZIP and runtime files by SHA-256.
 The included third-party inventory originated with 0.2.0; dependencies are unchanged.
 '@
+    $taskCandidateRelative=[IO.Path]::GetRelativePath($taskRoot,$taskPublish).Replace('\','/')
+    $taskReadme=$taskReadme.Replace('artifacts/ui-preview-candidates/0.3.0-preview.1/<candidate>',$taskCandidateRelative)
+    $taskReadme=$taskReadme.Replace('artifacts/qa','artifacts/qa/ui-preview-candidates/'+$CandidateId)
     Set-Content -LiteralPath (Join-Path $taskPublish 'UI-PREVIEW-README.md') -Value $taskReadme -Encoding utf8
     Copy-Item -LiteralPath (Join-Path $taskPublish 'UI-PREVIEW-README.md') -Destination (Join-Path $taskRelease 'UI-PREVIEW-README.md') -Force
 
@@ -218,10 +259,11 @@ The included third-party inventory originated with 0.2.0; dependencies are uncha
     New-VerifiedZip $taskRuntimeZip $taskPublish $taskRuntimeFiles
     $taskSourceHash=(Get-FileHash -LiteralPath $taskSourceZip -Algorithm SHA256).Hash.ToLowerInvariant()
     $taskRuntimeHash=(Get-FileHash -LiteralPath $taskRuntimeZip -Algorithm SHA256).Hash.ToLowerInvariant()
-    Invoke-PreviewTool $CompilerPath @('/Qp',"/DPublishDir=$taskPublish",(Join-Path $taskRoot 'installer/GlassDesk.UiPreview.iss')) 'preview-installer-build.log'
+    Invoke-PreviewTool $CompilerPath @('/Qp',"/DPublishDir=$taskPublish","--output-dir=$taskRelease",(Join-Path $taskRoot 'installer/GlassDesk.UiPreview.iss')) 'preview-installer-build.log'
     $taskInstaller=Join-Path $taskRelease "GlassDesk-$taskVersion-win-x64-ui-preview-setup.exe"
     if(!(Test-Path -LiteralPath $taskInstaller -PathType Leaf)){throw 'Preview installer output missing.'}
     $taskInstallerHash=(Get-FileHash -LiteralPath $taskInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+    $taskAutomatedChecks=if($RunChecks){'native regression; Core; Platform; Plugin; Audio'}else{'Not run; compile-only default'}
     $taskManifest=[ordered]@{
         Version=$taskVersion;Kind='UI Preview';BuildStartedUtc=$taskStarted;PackagedUtc=[DateTimeOffset]::UtcNow.ToString('O')
         ProductVersion=$taskProductVersion;Sdk=$taskSdk.Trim();NativeDirectory=[IO.Path]::GetRelativePath($taskRoot,$taskNative).Replace('\','/')
@@ -230,7 +272,7 @@ The included third-party inventory originated with 0.2.0; dependencies are uncha
         InstallerFile=[IO.Path]::GetFileName($taskInstaller);InstallerSha256=$taskInstallerHash
         InstallerCompilerSha256=(Get-FileHash -LiteralPath $CompilerPath -Algorithm SHA256).Hash.ToLowerInvariant()
         SourceFiles=$taskSourceAfter;RuntimeFiles=(Get-FileManifest $taskPublish $taskRuntimeFiles)
-        AutomatedChecks='native hidden ABI/message regression; Core; Platform; Plugin; Audio'
+        CandidateId=$CandidateId;CompileOnlyDefault=$true;AutomatedChecks=$taskAutomatedChecks
         NativeGuiAndResidency='Not determined by this build script; see the acceptance report.'
         AcceptanceReportIncluded=(Test-Path -LiteralPath (Join-Path $taskPublish 'AcceptanceReport.md'))
         FormalReleaseUnchanged=$true
