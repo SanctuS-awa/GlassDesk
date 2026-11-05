@@ -1,4 +1,4 @@
-﻿GlassDesk 0.1.0 - 随附第三方组件许可条款 / Bundled third-party component terms
+﻿GlassDesk 0.2.1.1 beta - 随附第三方组件许可条款 / Bundled third-party component terms
 
 安装即表示同意遵守以下条款中适用于随附第三方组件的规定。完整第三方声明保存在安装目录的 licenses 文件夹。本文件不授予或更改 GlassDesk 自身源代码的许可，也不改变开源组件许可授予的权利。
 

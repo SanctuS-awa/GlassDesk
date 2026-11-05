@@ -6,7 +6,7 @@ using Windows.UI.Composition;
 
 namespace GlassDesk.App;
 
-/// <summary>Persistent Home layers. Motion never repaints the static app grid or text.</summary>
+/// <summary>Persistent Home Dock and folder surfaces. Navigation lives in an owned side window.</summary>
 internal sealed class HomeVisual : IDisposable
 {
     readonly NativeWidgetHost _host;
@@ -20,29 +20,20 @@ internal sealed class HomeVisual : IDisposable
     readonly Dictionary<int, byte[]> _appIcons = [];
     int _iconRevision;
     readonly Dictionary<CompositionPathGeometry, CompositionPath> _paths = [];
-    readonly ContainerVisual _viewport, _grid, _nav, _navClip, _eyes, _gaze, _popup;
-    readonly CompositionRoundedRectangleGeometry _navClipGeometry;
-    readonly ControlDepthVisual _navPlate, _dockPlate;
-    readonly Layer _apps, _help, _popupInk, _notice;
-    readonly Layer[] _appArt = new Layer[6];
-    readonly Layer[] _navIcons = new Layer[3], _folderLabels = new Layer[3];
-    readonly ShapeVisual[] _arcs = new ShapeVisual[4];
-    readonly CompositionPathGeometry[] _arcGeometry = new CompositionPathGeometry[4];
-    readonly CompositionLinearGradientBrush[] _arcFill = new CompositionLinearGradientBrush[4];
-    readonly CompositionSpriteShape[] _arcShape = new CompositionSpriteShape[4];
-    readonly Folder[] _folders = new Folder[3];
-    readonly CompositionColorBrush _eyeInk;
+    readonly ContainerVisual _popup;
+    readonly ControlDepthVisual _dockPlate, _dockNavPlate, _navigationPlate;
+    readonly Layer _dockTriggerIcon, _navigationIcons, _help, _popupInk, _notice;
+    readonly Layer[] _appArt = new Layer[2];
+    readonly Folder[] _folders = new Folder[1];
     readonly CompositionPathGeometry _popupGeometry;
     readonly ShapeVisual _popupFace;
     readonly CompositionSpriteShape _popupShape;
     readonly CompositionLinearGradientBrush _popupFill, _popupRim;
-    readonly ShapeVisual _scrollRail;
-    readonly CompositionRoundedRectangleGeometry _scrollGeometry;
     HomePresentationLayout? _layout;
-    bool _visible, _active, _popupOpen, _popupPresented, _reduced, _disposed;
+    bool _visible, _popupOpen, _popupPresented, _reduced, _disposed;
     bool _highContrast;
     uint _foreground, _background;
-    string? _appsKey, _helpKey;
+    string? _helpKey;
     HomePopupRenderKey? _popupKey;
     public ContainerVisual Visual { get; }
 
@@ -89,47 +80,19 @@ internal sealed class HomeVisual : IDisposable
     public HomeVisual(NativeWidgetHost host)
     {
         _host = host; _compositor = host.Compositor;
-        Visual = Container(); _viewport = Container(); _grid = Container();
-        _viewport.Clip = Own(_compositor.CreateInsetClip());
-        Visual.Children.InsertAtTop(_viewport); _viewport.Children.InsertAtTop(_grid);
-        _apps = new(host, _grid);
-        for (int i = 0; i < _appArt.Length; i++) _appArt[i] = new(host, _grid);
-        _nav = Container(); _grid.Children.InsertAtTop(_nav);
-        _navPlate = Own(new ControlDepthVisual(_compositor)); _nav.Children.InsertAtTop(_navPlate.Visual);
-        _navClip = Container(); _nav.Children.InsertAtTop(_navClip);
-        _navClipGeometry = Own(_compositor.CreateRoundedRectangleGeometry());
-        _navClip.Clip = Own(_compositor.CreateGeometricClip(_navClipGeometry));
-        for (int i = 0; i < 4; i++)
-        {
-            _arcs[i] = Shape(); _arcGeometry[i] = Own(_compositor.CreatePathGeometry());
-            _arcFill[i] = Gradient(0xA3FFFFFF, 0x2694A8BC);
-            _arcShape[i] = Own(_compositor.CreateSpriteShape(_arcGeometry[i]));
-            _arcShape[i].FillBrush = _arcFill[i];
-            _arcShape[i].StrokeBrush = Gradient(0xB3FFFFFF, 0x28374658); _arcShape[i].StrokeThickness = .7f;
-            _arcs[i].Shapes.Add(_arcShape[i]); _navClip.Children.InsertAtTop(_arcs[i]);
-        }
-        // Semantic targets remain still while the decorative sheets reveal beneath them.
-        // This is deliberate: an animated silhouette is not a moving button hit rectangle.
-        for (int i = 0; i < 3; i++) _navIcons[i] = new(host, _navClip);
-        _eyes = Container(); _gaze = Container(); _eyes.Children.InsertAtTop(_gaze); _navClip.Children.InsertAtTop(_eyes);
-        _eyes.Size = _gaze.Size = new(18, 9);
-        _eyeInk = Ink(0xFF29323D);
-        for (int i = 0; i < 2; i++)
-        {
-            var eye = Rounded(new(6, 9), 3, _eyeInk); eye.Offset = new(i * 12, 0, 0); _gaze.Children.InsertAtTop(eye);
-        }
-        _help = new(host, _navClip);
+        Visual = Container();
         _dockPlate = Own(new ControlDepthVisual(_compositor)); Visual.Children.InsertAtTop(_dockPlate.Visual);
-        for (int i = 0; i < 3; i++)
+        _dockNavPlate = Own(new ControlDepthVisual(_compositor)); Visual.Children.InsertAtTop(_dockNavPlate.Visual);
+        _dockTriggerIcon = new(host, Visual);
+        _navigationPlate = Own(new ControlDepthVisual(_compositor)); Visual.Children.InsertAtTop(_navigationPlate.Visual);
+        _navigationIcons = new(host, Visual);
+        for (int i = 0; i < _appArt.Length; i++) _appArt[i] = new(host, Visual);
+        for (int i = 0; i < _folders.Length; i++)
         {
             _folders[i] = new(this); Visual.Children.InsertAtTop(_folders[i].Visual);
-            _folderLabels[i] = new(host, Visual);
         }
+        _help = new(host, Visual);
         _notice = new(host, Visual);
-        _scrollRail = Shape(); _scrollGeometry = Own(_compositor.CreateRoundedRectangleGeometry());
-        var railShape = Own(_compositor.CreateSpriteShape(_scrollGeometry));
-        railShape.FillBrush = Ink(0x55394552); _scrollGeometry.CornerRadius = new(1.5f);
-        _scrollRail.Shapes.Add(railShape); Visual.Children.InsertAtTop(_scrollRail);
 
         _popup = Container(); Visual.Children.InsertAtTop(_popup);
         _popupFace = Shape(); _popup.Children.InsertAtTop(_popupFace);
@@ -141,121 +104,108 @@ internal sealed class HomeVisual : IDisposable
         _popup.Opacity = 0; Visual.Opacity = 0;
     }
 
-    public void Present(HomePresentationLayout layout, bool visible, bool active, int hoveredApp, int hoveredFolder,
-        int hoveredEntry, int selectedFolder, HomeFolderPreview? preview, int pressed, bool reduced, bool highContrast,
-        uint foreground, uint background, uint secondary, uint appLabelInk, uint dpi, IReadOnlyList<string> appNames,
-        IReadOnlyList<string> appGlyphs, IReadOnlyList<uint> appColors, IReadOnlyList<string> navGlyphs,
-        IReadOnlyList<string> folderNames, string? notice)
+    public void Present(HomePresentationLayout layout, bool visible, bool active, bool hoveredNav, int hoveredApp, int hoveredFolder,
+        int selectedFolder, HomeFolderPreview? preview, int pressed, bool reduced, bool highContrast,
+        uint foreground, uint background, uint secondary, uint dpi, IReadOnlyList<string> appNames,
+        IReadOnlyList<string> appGlyphs, IReadOnlyList<uint> appColors, IReadOnlyList<string> folderNames, string? notice)
     {
         bool initial = !_visible || _layout is null;
         bool geometryChanged = _layout?.Width != layout.Width || _layout?.Height != layout.Height;
         bool paletteChanged = _highContrast != highContrast || _foreground != foreground || _background != background;
-        bool reducedChanged = _reduced != reduced;
         _highContrast = highContrast; _foreground = foreground; _background = background;
         bool wasVisible = _visible; _visible = visible; _reduced = reduced;
         Visual.IsVisible = visible;
         if (!visible)
         {
             if (wasVisible) StopMotion();
-            _gaze.Offset = Vector3.Zero;
-            _active = false; _popupOpen = _popupPresented = false; _popup.Opacity = 0; return;
+            _popupOpen = _popupPresented = false; _popup.Opacity = 0; return;
         }
         bool immediate = initial || reduced || geometryChanged;
         _layout = layout;
         Visual.Size = new(layout.Width, layout.Height);
-        _viewport.Offset = new(0, layout.GridViewport.Y, 0); _viewport.Size = new(layout.Width, layout.GridViewport.Height);
-        _grid.Size = new(layout.Width, layout.ContentBottom);
-        _grid.Offset = new(0, -layout.GridViewport.Y - layout.Scroll, 0);
-        var nav = layout.NavCard;
-        _nav.Offset = new(nav.X, nav.Y, 0); _nav.Size = _navClip.Size = new(nav.Width, nav.Height);
-        _navClipGeometry.Size = new(nav.Width, nav.Height); _navClipGeometry.CornerRadius = new(26);
-        _navPlate.SetBounds(0, 0, nav.Width, nav.Height, 26);
-        uint plate = highContrast ? background : 0xB3F4F7FA;
-        _navPlate.SetAppearance(plate, foreground, highContrast);
-        _navPlate.SetFeedback(active, pressed == WidgetActions.HomeNavToggle, reduced);
-        _dockPlate.SetBounds(layout.Dock.X, layout.Dock.Y, layout.Dock.Width, layout.Dock.Height, 20);
+        _dockPlate.SetBounds(layout.DockPill.X, layout.DockPill.Y, layout.DockPill.Width, layout.DockPill.Height, 28);
         _dockPlate.SetAppearance(highContrast ? background : 0xBCF6F8FA, foreground, highContrast);
-        _dockPlate.SetFeedback(hoveredFolder >= 0, false, reduced);
-        _eyeInk.Color = ColorOf(foreground);
-        bool retarget = immediate || active != _active || reducedChanged;
-        for (int i = 0; i < 4; i++)
+        bool dockHover = hoveredFolder >= 0 || hoveredApp >= 0;
+        bool dockPressed = pressed == WidgetActions.HomeFolderFirst
+            || pressed >= WidgetActions.HomeAppFirst && pressed < WidgetActions.HomeAppFirst + WidgetActions.HomeAppCount;
+        _dockPlate.SetFeedback(dockHover, dockPressed, reduced);
+        var navTrigger = layout.NavTrigger;
+        _dockNavPlate.SetBounds(navTrigger.X, navTrigger.Y, navTrigger.Width, navTrigger.Height, navTrigger.Width / 2);
+        _dockNavPlate.SetAppearance(highContrast ? background : 0xBCF6F8FA, foreground, highContrast);
+        _dockNavPlate.SetFeedback(hoveredNav || active,
+            pressed == WidgetActions.HomeNavToggle, reduced);
+        string triggerGlyph = active ? "\uE711" : "\uE700";
+        _dockTriggerIcon.SetCached($"{triggerGlyph}/{foreground}/{dpi}", new(56),
+            [Glyph(triggerGlyph, 18, 18, 20, foreground)]);
+        _dockTriggerIcon.Visual.Offset = new(navTrigger.X, navTrigger.Y, 0);
+        _dockTriggerIcon.Visual.Size = new(56);
+        var rail = layout.NavRail;
+        _navigationPlate.SetBounds(rail.X, rail.Y, rail.Width, rail.Height, rail.Width / 2);
+        _navigationPlate.SetAppearance(highContrast ? background : 0xBCF6F8FA, foreground, highContrast);
+        _navigationPlate.Visual.IsVisible = active && rail.Height > 0;
+        _navigationIcons.Visual.IsVisible = active && rail.Height > 0;
+        if (active && rail.Height > 0)
         {
-            float w = nav.Width * HomeLayout.NavBoxScales[i], h = nav.Height * HomeLayout.NavBoxScales[i];
-            if (geometryChanged || initial)
+            string[] glyphs = ["\uE8D6", "\uE8D6", "\uE8FD", "\uE734", "\uE823"];
+            var icons = new List<SurfaceOp>();
+            for (int i = 0; i < glyphs.Length; i++)
             {
-                _arcs[i].Size = new(w, h);
-                Path(_arcGeometry[i], ArcPath(w, h));
+                var item = layout.NavRailItem(i);
+                float x = item.X - rail.X, y = item.Y - rail.Y;
+                if (i == 0) icons.Add(Round(x, y, item.Width, item.Height, item.Width / 2,
+                    highContrast ? background : 0x99242B35));
+                float glyphSize = Math.Min(20, item.Width * .55f);
+                icons.Add(Glyph(glyphs[i], x + (item.Width - glyphSize) / 2,
+                    y + (item.Height - glyphSize) / 2, glyphSize,
+                    highContrast ? foreground : i == 0 ? 0xFFFFFFFF : 0xAAE5EAF1));
             }
-            Colors(_arcFill[i], highContrast ? background : 0xC7FFFFFF,
-                highContrast ? background : i == 0 ? 0x40869BAFu : 0x3098AABDu);
-            if (retarget)
-            {
-                Vector3 target = active ? new(-1, nav.Height - h + 1, 0) : new(-w, nav.Height + 1, 0);
-                Move(_arcs[i], target, immediate, active ? 420 : 340, active ? i * 45 : 0);
-                Scalar(_arcs[i], "Opacity", active ? 1 : 0, immediate, active ? 260 : 240);
-            }
-        }
-        string appsKey = $"{layout.Width}/{layout.Height}/{foreground}/{appLabelInk}/{dpi}";
-        if (_appsKey != appsKey)
-        {
-            var ops = new List<SurfaceOp>();
-            for (int i = 0; i < appNames.Count; i++)
-            {
-                var label = layout.AppLabel(i);
-                ops.Add(SurfaceOp.Typography(appNames[i], TextRole.Caption, label.X, label.Y, label.Width, label.Height, appLabelInk, true));
-            }
-            _apps.Set(new(layout.Width, layout.ContentBottom), ops); _appsKey = appsKey;
+            _navigationIcons.SetCached($"{rail.Width}/{rail.Height}/{foreground}/{background}/{highContrast}/{dpi}",
+                new(rail.Width, rail.Height), icons);
+            _navigationIcons.Visual.Offset = new(rail.X, rail.Y, 0);
         }
         for (int i = 0; i < appNames.Count; i++)
         {
-            var icon = layout.AppIcon(i); bool down = pressed == WidgetActions.HomeAppFirst + i;
+            var icon = layout.DockAppIcon(i); bool down = pressed == WidgetActions.HomeAppFirst + i;
             var ink = new List<SurfaceOp>();
             if (!highContrast && _appIcons.TryGetValue(i, out var artwork))
-                ink.Add(new SurfaceOp { Kind = SurfaceOpKind.Image, Width = 52, Height = 52, Image = artwork });
+                ink.Add(new SurfaceOp { Kind = SurfaceOpKind.Image, Width = 44, Height = 44, Radius = 11, Image = artwork });
             else
             {
-                ink.Add(Round(0, 0, 52, 52, 14, highContrast ? background : appColors[i]));
-                ink.Add(Glyph(appGlyphs[i], 14, 14, 24, highContrast ? foreground : 0xFFFFFFFF));
+                ink.Add(Round(0, 0, 44, 44, 11, highContrast ? background : appColors[i]));
+                ink.Add(Glyph(appGlyphs[i], 11, 11, 22, highContrast ? foreground : 0xFFFFFFFF));
             }
-            _appArt[i].SetCached($"{i}/{_iconRevision}/{foreground}/{background}/{highContrast}/{dpi}", new(52), ink);
-            _appArt[i].Visual.CenterPoint = new(26, 26, 0);
+            _appArt[i].SetCached($"{i}/{_iconRevision}/{foreground}/{background}/{highContrast}/{dpi}", new(44), ink);
+            _appArt[i].Visual.CenterPoint = new(22, 22, 0);
             float lift = down ? .8f : hoveredApp == i && !reduced ? -2 : 0;
             Move(_appArt[i].Visual, new(icon.X, icon.Y + lift, 0), immediate, down ? 90 : 160);
             float scale = down ? .97f : hoveredApp == i && !reduced ? 1.03f : 1;
             Scale(_appArt[i].Visual, new(scale, scale, 1), immediate, down ? 90 : 160);
         }
-        for (int i = 0; i < 3; i++)
-        {
-            var entry = layout.NavEntry(i);
-            _navIcons[i].Visual.Offset = new(entry.X - nav.X, entry.Y - nav.Y, 0);
-            string key = $"{foreground}/{dpi}/{i}/{pressed}";
-            _navIcons[i].SetCached(key, new(44), [Glyph(navGlyphs[i], 13, 13, 18, foreground)]);
-            _navIcons[i].Visual.Opacity = active ? 1 : 0;
-        }
-        Move(_eyes, active ? new(nav.Width - 28, nav.Height - 21, 0) : new(nav.Width / 2 - 9, nav.Height / 2 - 4.5f, 0),
-            immediate, 400);
-        string helpName = hoveredEntry switch { 0 => "音乐", 1 => "小组件", 2 => "设置", _ => "" };
-        string helpKey = $"{helpName}/{secondary}/{dpi}";
+        for (int i = 0; i < folderNames.Count; i++)
+            _folders[i].Set(layout.DockFolder, hoveredFolder == i || selectedFolder == i,
+                pressed == WidgetActions.HomeFolderFirst + i, immediate, highContrast, foreground, background);
+        string helpName = selectedFolder >= 0 ? "" : hoveredFolder == 0 ? folderNames[0]
+            : hoveredApp >= 0 && hoveredApp < appNames.Count ? appNames[hoveredApp]
+            : hoveredNav ? "导航" : "";
+        string helpKey = $"{helpName}/{secondary}/{dpi}/{foreground}/{background}/{highContrast}";
         if (_helpKey != helpKey)
         {
-            _help.Set(new(90, 20), [SurfaceOp.Typography(helpName, TextRole.NavigationSemantic, 0, 0, 90, 20, secondary)]);
+            float width = helpName == "网易云音乐" ? 104 : helpName == "导航" ? 64 : 72;
+            _help.Set(new(width, 22),
+                [Round(0, 0, width, 22, 9, highContrast ? background : 0xF02A3441),
+                 SurfaceOp.Typography(helpName, TextRole.Caption, 4, 3, width - 8, 16,
+                    highContrast ? foreground : 0xFFF8FAFC, true)]);
             _helpKey = helpKey;
         }
-        _help.Visual.Offset = new(12, 12, 0); _help.Visual.Opacity = active && hoveredEntry >= 0 ? 1 : 0;
-        for (int i = 0; i < 3; i++)
+        if (helpName.Length > 0)
         {
-            var slot = layout.FolderSlot(i); bool open = hoveredFolder == i || selectedFolder == i;
-            _folders[i].Set(slot, open, pressed == WidgetActions.HomeFolderFirst + i, immediate, highContrast, foreground, background);
-            _folderLabels[i].Visual.Offset = new(slot.X - 20, layout.Dock.Y - 28, 0);
-            _folderLabels[i].SetCached($"{folderNames[i]}/{foreground}/{background}/{highContrast}/{dpi}", new(84, 22),
-                [Round(0, 0, 84, 22, 9, highContrast ? background : 0xF02A3441),
-                SurfaceOp.Typography(folderNames[i], TextRole.Caption, 4, 3, 76, 16, highContrast ? foreground : 0xFFF8FAFC, true)]);
-            Scalar(_folderLabels[i].Visual, "Opacity", open && selectedFolder < 0 ? 1 : 0, immediate, 120);
+            float center = hoveredFolder == 0 ? layout.DockFolder.X + 22
+                : hoveredApp >= 0 ? layout.DockAppIcon(hoveredApp).X + 22
+                : navTrigger.X + navTrigger.Width / 2;
+            float width = helpName == "网易云音乐" ? 104 : helpName == "导航" ? 64 : 72;
+            _help.Visual.Offset = new(Math.Clamp(center - width / 2, 8, layout.Width - width - 8), layout.Dock.Y - 28, 0);
         }
-        _scrollRail.Size = new(layout.Width, layout.Height); _scrollRail.Opacity = layout.MaxScroll > 0 ? 1 : 0;
-        float thumb = Math.Max(28, layout.GridViewport.Height * layout.GridViewport.Height / (layout.GridViewport.Height + layout.MaxScroll));
-        _scrollGeometry.Offset = new(layout.Width - 7, layout.GridViewport.Y + (layout.GridViewport.Height - thumb) * layout.Scroll / Math.Max(1, layout.MaxScroll));
-        _scrollGeometry.Size = new(3, thumb);
+        Scalar(_help.Visual, "Opacity", helpName.Length > 0 ? 1 : 0, immediate, 120);
         bool hasNotice = !string.IsNullOrWhiteSpace(notice) && selectedFolder < 0;
         _notice.Visual.Opacity = hasNotice ? 1 : 0;
         if (hasNotice)
@@ -268,13 +218,6 @@ internal sealed class HomeVisual : IDisposable
                 SurfaceOp.Typography(notice!, TextRole.Caption, 30, 5, width - 38, 16, foreground)]);
         }
         PresentPopup(layout, selectedFolder, preview, pressed, secondary, dpi, immediate, paletteChanged);
-        _active = active;
-    }
-
-    public void Gaze(float x, float y)
-    {
-        Vector3 target = _reduced ? Vector3.Zero : new(Math.Clamp(x, -2, 2), Math.Clamp(y, -2, 2), 0);
-        Move(_gaze, target, _reduced, 200);
     }
 
     void PresentPopup(HomePresentationLayout layout, int selected, HomeFolderPreview? preview,
@@ -290,7 +233,7 @@ internal sealed class HomeVisual : IDisposable
                 _foreground, _background, secondary, dpi, _highContrast);
             if (_popupKey != key || paletteChanged)
             {
-                float arrow = Math.Clamp(layout.FolderSlot(selected).X + 22 - pop.X, 24, pop.Width - 24);
+                float arrow = Math.Clamp(layout.DockFolder.X + 22 - pop.X, 24, pop.Width - 24);
                 Path(_popupGeometry, PopupPath(pop.Width, pop.Height, arrow));
                 Colors(_popupFill, _highContrast ? _background : 0xFAFFFFFF, _highContrast ? _background : 0xF5EEF3F7);
                 Colors(_popupRim, _highContrast ? _foreground : 0xE6FFFFFF, _highContrast ? _foreground : 0x503B5066);
@@ -531,19 +474,26 @@ internal sealed class HomeVisual : IDisposable
 
     public void Invalidate()
     {
-        _appsKey = _helpKey = null; _popupKey = null; _notice.Invalidate();
-        foreach (var layer in _navIcons.Concat(_folderLabels).Concat(_appArt)) layer.Invalidate();
+        _helpKey = null; _popupKey = null; _notice.Invalidate();
+        _dockTriggerIcon.Invalidate(); _help.Invalidate();
+        foreach (var layer in _appArt) layer.Invalidate();
     }
     public void SetAppIcon(int index, byte[] bytes)
-    { _appIcons[index] = bytes; _iconRevision++; _appsKey = null; }
+    { _appIcons[index] = bytes; _iconRevision++; }
+    internal void SetDockOpticalGlass(bool enabled)
+    {
+        _dockPlate.SetOpticalGlass(enabled);
+        _dockNavPlate.SetOpticalGlass(enabled);
+        _navigationPlate.SetOpticalGlass(enabled);
+    }
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
         StopMotion();
         foreach (var container in _containers) container.Children.RemoveAll();
         foreach (var visual in _shapeVisuals) visual.Shapes.Clear();
-        _apps.Dispose(); _help.Dispose(); _popupInk.Dispose(); _notice.Dispose();
-        foreach (var layer in _navIcons.Concat(_folderLabels).Concat(_appArt)) layer.Dispose();
+        _dockTriggerIcon.Dispose(); _navigationIcons.Dispose(); _help.Dispose(); _popupInk.Dispose(); _notice.Dispose();
+        foreach (var layer in _appArt) layer.Dispose();
         _paths.Clear();
         for (int i = _owned.Count - 1; i >= 0; i--) _owned[i].Dispose();
     }

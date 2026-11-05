@@ -1,3 +1,4 @@
+#error Screen_capture_is_prohibited_by_the_GlassDesk_user_requirement
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "CaptureProtocol.h"

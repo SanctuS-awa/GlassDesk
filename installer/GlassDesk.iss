@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.1.1beta"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\artifacts\publish"
@@ -9,6 +9,7 @@
 AppId={{85C98BA3-7C50-4C1A-8627-E611BC6251AF}
 AppName=GlassDesk
 AppVersion={#AppVersion}
+VersionInfoVersion=0.2.1.1
 AppPublisher=GlassDesk
 AppPublisherURL=https://github.com/Sheng-awa/GlassDesk
 AppSupportURL=https://github.com/Sheng-awa/GlassDesk/issues

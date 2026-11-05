@@ -1,47 +1,35 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "LiquidGlass.h"
-#include "CaptureChannel.h"
-#include <windows.graphics.capture.interop.h>
-#include <windows.graphics.directx.direct3d11.interop.h>
+#include "SurfaceTension.h"
 #include <windows.ui.composition.interop.h>
-#include <dwmapi.h>
-#include <winrt/Windows.Graphics.Capture.h>
-#include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
-#include <winrt/Windows.Foundation.Metadata.h>
+#include <winrt/Windows.Foundation.h>
 #include <d3dcompiler.h>
 #include <d3d11_1.h>
-#include <d3d11_4.h>
 #include <dxgi.h>
 #include <wincodec.h>
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstring>
-#include <cstdio>
-#include <utility>
-#include <mutex>
+#include <vector>
 
 using namespace winrt;
-using namespace winrt::Windows::Graphics::Capture;
 using namespace winrt::Windows::Graphics::DirectX;
-using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 using namespace winrt::Windows::UI::Composition;
 
 namespace gd
 {
 namespace
 {
-// Original material. A small prefilter avoids sparse-kernel banding on text.
-// The frosted center and clearer curved bevel
-// sample the same real desktop frame; application content is never distorted.
-// Shape and coordinates are physical pixels; content is a separate visual.
+// The host uses only Optics, a procedural highlight independent of desktop pixels.
+// Blur/refraction shaders remain solely for SaveReferencePreview's generated grid.
 constexpr char shader[]=R"HLSL(
 cbuffer Parameters : register(b0) {
     float2 textureSize; float2 panelSize;
     float2 panelOrigin; float radius; float blurRadius;
-    float2 axis; float2 padding;
+    float pixelScale; float refraction; float2 padding;
+    float4 lenses[3]; float4 lensStyles[3];
 };
 Texture2D source : register(t0);
 Texture2D unfiltered : register(t1);
@@ -52,16 +40,20 @@ Varying VS(uint id : SV_VertexID) {
     o.position=float4(o.uv*float2(2,-2)+float2(-1,1),0,1); return o;
 }
 float4 Blur(float2 uv,float2 direction) {
-    if(blurRadius<0.01) return float4(source.SampleLevel(linearClamp,uv,0).rgb,1);
-    float sigma=max(blurRadius*0.48,0.01);
-    float stride=blurRadius/6.0;
-    float3 color=0; float weightSum=0;
-    [unroll] for(int i=-6;i<=6;i++) {
-        float weight=exp(-0.5*pow(i*stride/sigma,2));
-        color+=source.SampleLevel(linearClamp,uv+direction*(i*stride)/textureSize,0).rgb*weight;
-        weightSum+=weight;
+    float3 result=source.SampleLevel(linearClamp,uv,0).rgb;
+    if(blurRadius>=0.01) {
+        float sigma=max(blurRadius*0.48,0.01);
+        float stride=blurRadius/6.0;
+        float3 color=0; float weightSum=0;
+        [unroll] for(int i=-6;i<=6;i++) {
+            float normalized=i*stride/sigma;
+            float weight=exp(-0.5*normalized*normalized);
+            color+=source.SampleLevel(linearClamp,uv+direction*(i*stride)/textureSize,0).rgb*weight;
+            weightSum+=weight;
+        }
+        result=color/max(weightSum,0.0001);
     }
-    return float4(color/weightSum,1);
+    return float4(result,1);
 }
 float4 Horizontal(Varying i) : SV_TARGET { return Blur(i.uv,float2(1,0)); }
 float4 Prefilter(Varying i) : SV_TARGET {
@@ -72,52 +64,182 @@ float4 Prefilter(Varying i) : SV_TARGET {
         +source.SampleLevel(linearClamp,i.uv+float2(-d.x,d.y),0)
         +source.SampleLevel(linearClamp,i.uv+d,0))*0.25;
 }
+
+// Original GlassDesk optics. No third-party implementation copied.
+struct Profile { float2 normal; float inside; float lens; float width; float coverage; float3 dome; };
+float Bump(float u) { float b=max(0.0,1.0-u*u);return b*b*b; }
+float WarpFactor(float y) {
+    float v=saturate(y/panelSize.y),strain=padding.x;
+    float belly=4.0*v*(1.0-v),direction=strain>=0.0?1.0:-1.0;
+    float amount=abs(strain)*belly*belly*(0.78+0.22*direction*(2.0*v-1.0));
+    float limit=min(7.0*pixelScale,min(panelSize.y*0.035,panelSize.x*0.018));
+    return 1.0-min(amount,1.15)*limit/(panelSize.x*0.5);
+}
+float SurfaceDistance(float2 p) {
+    float factor=WarpFactor(p.y);p.x=panelSize.x*0.5+(p.x-panelSize.x*0.5)/factor;
+    float2 halfPanel=panelSize*0.5;
+    float r=clamp(radius,0.0,min(halfPanel.x,halfPanel.y));
+    float2 q=abs(p-halfPanel)-(halfPanel-r);
+    return (length(max(q,0.0))+min(max(q.x,q.y),0.0)-r)*factor;
+}
+Profile Shape(float2 p) {
+    Profile o;
+    float2 halfPanel=panelSize*0.5;
+    float r=clamp(radius,0.0,min(halfPanel.x,halfPanel.y));
+    float tension=padding.x;
+    float2 original=p;
+    float factor=WarpFactor(p.y);
+    p.x=halfPanel.x+(p.x-halfPanel.x)/factor;
+    float2 local=p-halfPanel;
+    float2 q=abs(local)-(halfPanel-r);
+    float2 corner=max(q,0.0);
+    float len=length(corner);
+    float sd=len+min(max(q.x,q.y),0.0)-r;
+    o.normal=len>0.0001?corner/max(len,0.0001)*sign(local)
+        :q.x>q.y?float2(sign(local.x),0):float2(0,sign(local.y));
+    if(abs(tension)>0.0001) {
+        sd=SurfaceDistance(original);
+        float step=max(pixelScale*0.6,0.5);
+        float2 gradient=float2(SurfaceDistance(original+float2(step,0))-SurfaceDistance(original-float2(step,0)),
+            SurfaceDistance(original+float2(0,step))-SurfaceDistance(original-float2(0,step)));
+        o.normal=gradient/max(length(gradient),0.0001);
+    }
+    o.inside=max(-sd,0.0);
+    float scale=max(pixelScale,0.5);
+    o.width=max(0.5,min(clamp(r*0.35,5.0*scale,12.0*scale)*(1.0+0.12*abs(tension)),min(halfPanel.x,halfPanel.y)*0.94));
+    float t=saturate(o.inside/o.width);
+    o.lens=1.0-t*t*t*(t*(t*6.0-15.0)+10.0);
+    float arc=sqrt(max(t*(2.0-t),0.001));
+    float slope=(1.0-t)/max(arc,0.12);
+    o.dome=normalize(float3(o.normal*slope*0.65,1.0));
+    o.coverage=saturate(0.5-sd);
+    return o;
+}
+float4 Optics(Varying i) : SV_TARGET {
+    Profile s=Shape(i.uv*panelSize);
+    float scale=max(pixelScale,0.5);
+    float facing=dot(s.normal,normalize(float2(-0.55,-1.0)));
+    float front=pow(saturate(facing),4.0);
+    float back=pow(saturate(-facing),5.0);
+    float rim=exp(-pow(s.inside/max(scale*(0.5+1.1*front+0.6*back),0.1),2.0));
+    float3 light=normalize(float3(-0.55,-1.0,0.85));
+    float3 halfLight=normalize(light+float3(0,0,1));
+    float spec=pow(saturate(dot(s.dome,halfLight)),42.0)*s.lens;
+    float shoulder=4.0*s.lens*(1.0-s.lens);
+    float shine=saturate(rim*(0.025+0.50*front+0.24*back)+spec*0.16);
+    float absorption=saturate(shoulder*(0.008+0.022*back+0.005*(1.0-front))
+        +exp(-s.inside/max(1.1*scale,0.1))*(0.008+0.045*back));
+    // Premultiplied reflection plus absorption, independent of screen pixels.
+    float alpha=1.0-(1.0-absorption)*(1.0-shine);
+    return float4(shine.xxx,alpha)*s.coverage;
+}
+float4 Over(float4 front,float4 back){return front+back*(1-front.a);}
+float LocalDistance(float2 p,float4 lens,float r){
+    r=clamp(r,0,min(lens.z,lens.w)*.5);
+    float2 q=abs(p-lens.xy)-lens.zw*.5+r;
+    return length(max(q,0))+min(max(q.x,q.y),0)-r;
+}
+float4 SystemOptics(Varying i) : SV_TARGET {
+    // SV_POSITION stays in physical pixels even though the retained surface is
+    // larger than the current panel. Exactly the SceneMesh's SDF and cap profile.
+    float2 p=i.position.xy;
+    float sd=SurfaceDistance(p),depth=max(0.0,-sd);
+    float epsilon=0.4;
+    float2 gradient=float2(SurfaceDistance(p+float2(epsilon,0))-SurfaceDistance(p-float2(epsilon,0)),
+        SurfaceDistance(p+float2(0,epsilon))-SurfaceDistance(p-float2(0,epsilon)));
+    float2 outward=gradient/max(length(gradient),0.0001);
+    float band=padding.y,u=1.0-saturate(depth/band);
+    float slope=0.62*u/sqrt(max(1.0-u*u,0.003));
+    float3 normal=normalize(float3(outward*slope,1));
+    float highlight=pow(saturate(dot(normal,normalize(float3(-.48,-.64,1)))),10);
+    float fresnel=pow(1-normal.z,3);
+    float key=pow(saturate(dot(outward,normalize(float2(-.55,-.83)))),3);
+    float counter=pow(saturate(dot(outward,normalize(float2(.65,.76)))),5);
+    float rim=exp(-pow((depth-1.1*pixelScale)/(1.3*pixelScale),2));
+    // Match the reference preview's single direction of illumination. A broad
+    // shoulder belongs to the curved cap, not to a second outlined rectangle.
+    float shoulder=4*u*(1-u);
+    float shine=saturate(highlight*.09+rim*(key*.24+counter*.065)+fresnel*.055
+        +shoulder*(key*.032+counter*.018));
+    float coverage=saturate(.5-sd);
+    // Transmission loss on the unlit side is paired with the white reflection.
+    // It follows this same cap/normal, vanishes at the center, and is not a
+    // full-perimeter stroke. In this entry only, the legacy blur slot carries
+    // the conservative opacity ceiling; no blur or background input is used.
+    float unlit=saturate(dot(outward,normalize(float2(.55,.83))));
+    float lip=exp(-pow((depth-1.5*pixelScale)/(1.4*pixelScale),2))*unlit;
+    float maxPrimaryAbsorption=clamp(blurRadius,0,.075);
+    float absorption=min(maxPrimaryAbsorption,.05*lip+.01*shoulder*unlit);
+    float4 result=float4(shine.xxx,1-(1-shine)*(1-absorption));
+    // The same three lens descriptors drive UVs and light. No extra texture,
+    // source visual or mesh: one premultiplied app-generated light pass.
+    [loop]for(int j=0;j<(int)refraction;j++){
+        float4 lens=lenses[j],style=lensStyles[j];
+        float d=LocalDistance(p,lens,style.x);
+        if(d>5*pixelScale)continue;
+        float a=style.y,activity=style.z;
+        // Let one projected shadow crossfade through the cap's existing 0.9 px feather.
+        if(d>-.45){
+            // Project down-right from the upper-left key light; preserve the unshifted cap gate.
+            float2 shadowPoint=p-float2(.6,1.2)*pixelScale;
+            float shadowDistance=max(0.0,LocalDistance(shadowPoint,lens,style.x));
+            float shadow=exp(-shadowDistance/(2*pixelScale))*exp(-shadowDistance/(3*pixelScale))
+                *.065*a*smoothstep(-.45,.45,d);
+            result=Over(float4(0,0,0,shadow),result);
+        }
+        if(d>.45)continue;
+        float2 q=abs(p-lens.xy)-lens.zw*.5+style.x;
+        float2 n=length(max(q,0))>.001?normalize(max(q,0))*sign(p-lens.xy)
+            :q.x>q.y?float2(sign(p.x-lens.x),0):float2(0,sign(p.y-lens.y));
+        float localDepth=max(0,-d),localBand=max(3*pixelScale,min(lens.z,lens.w)*.42);
+        float v=1-saturate(localDepth/localBand);
+        float3 capNormal=normalize(float3(n*(.46*v/sqrt(max(1-v*v,.003))),1));
+        float k=pow(saturate(dot(n,normalize(float2(-.55,-.83)))),3);
+        float c=pow(saturate(dot(n,normalize(float2(.65,.76)))),5);
+        // One continuous, IOR-matched cap reflection. Its Fresnel and compact
+        // specular response share the SDF-derived normal; no inset contour,
+        // fixed-depth rim, or crown wash is layered over the control.
+        const float f0Ratio=(1.45-1.0)/(1.45+1.0);
+        float f0=f0Ratio*f0Ratio;
+        float fresnel=f0+(1-f0)*pow(1-saturate(capNormal.z),5);
+        float3 light=normalize(float3(-.48,-.64,1));
+        float3 halfVector=normalize(light+float3(0,0,1));
+        float specular=pow(saturate(dot(capNormal,halfVector)),24);
+        float directional=.24*k+.045*c;
+        // GlassDesk calibration, not Apple's parameter set: preserve the
+        // dielectric IOR baseline; direction only weights the Fresnel rise and highlight.
+        float interaction=smoothstep(.3,1,activity);
+        float angularReflection=(fresnel-f0)*directional+specular*.075;
+        float white=saturate(f0+angularReflection*(1+.28*activity+.12*interaction));
+        float4 local=float4(white.xxx,white);
+        // Same physical .45 px feather as the mesh's secondary UV coverage.
+        float feather=1-smoothstep(-.45,.45,d);
+        result=Over(local*(a*feather),result);
+    }
+    return result*coverage;
+}
 float4 Glass(Varying i) : SV_TARGET {
     float2 p=i.uv*panelSize;
-    float2 halfPanel=panelSize*0.5;
-    float roundness=clamp(radius,0.0,min(halfPanel.x,halfPanel.y));
-    float2 local=p-halfPanel;
-    float2 q=abs(local)-(halfPanel-roundness);
-    float2 outside=max(q,0);
-    float outsideLength=length(outside);
-    float distance=outsideLength+min(max(q.x,q.y),0)-roundness;
-    // The rounded distance gradient meets the straight edges continuously.
-    // Guard its length rather than normalizing an empty corner vector.
-    float2 normal=outsideLength>0.0001?outside/max(outsideLength,0.0001)*sign(local)
-        :q.x>q.y?float2(sign(local.x),0):float2(0,sign(local.y));
-    float inside=max(0,-distance);
-    float bevelWidth=min(clamp(roundness*0.70,12.0,32.0),min(halfPanel.x,halfPanel.y));
-    float t=saturate(inside/max(bevelWidth,0.001));
-    // This finite C2 profile has no slope/curvature seam at the frosted
-    // interior. The same normal and profile also run around every corner.
-    float bevel=1-t*t*t*(t*(t*6-15)+10);
-    float bend=bevel*bevel*clamp(roundness*0.48,12.0,28.0);
-    float2 uv=(panelOrigin+p-normal*bend)/textureSize;
+    Profile s=Shape(p);
+    float scale=max(pixelScale,0.5);
+    float strength=saturate(refraction);
+    float bend=s.lens*s.lens*clamp(radius*0.58,9.0*scale,22.0*scale)*strength;
+    float2 local=p-panelSize*0.5;
+    float2 refracted=panelSize*0.5+local/(1.0+0.09*s.lens*strength)-s.normal*bend;
+    float2 uv=(panelOrigin+refracted)/textureSize;
     float3 frost=Blur(uv,float2(0,1)).rgb;
-    float3 clear=unfiltered.SampleLevel(linearClamp,uv,0).rgb;
-    float3 lumaWeights=float3(0.2126,0.7152,0.0722);
-    // Keep an edge lens while containing sharp desktop text and busy images.
-    // Both reads belong to this frame; this adds no history or capture work.
-    float detail=smoothstep(0.06,0.28,abs(dot(clear-frost,lumaWeights)));
-    float3 color=lerp(frost,clear,0.18+bevel*lerp(0.70,0.55,detail));
-    // Neutral interior lift preserves the clear dark foreground on a dark
-    // desktop. The bevel stays more transparent and distinct from the center.
-    float luminance=dot(color,float3(0.2126,0.7152,0.0722));
-    float veil=saturate((0.22-luminance)/max(1-luminance,0.01))*(1-bevel*0.92);
-    color=lerp(color,float3(1,1,1),veil);
-    float light=dot(normal,normalize(float2(-0.55,-1.0)));
-    float rim=exp(-inside/0.95);
-    float shoulder=4*bevel*(1-bevel);
-    // A shallow absorption shoulder and lower contact rim imply thickness.
-    // Headroom-aware light keeps white backgrounds from becoming a hot frame.
-    color*=1-0.016*shoulder-0.065*rim*max(-light,0);
-    float highlight=rim*(0.055+0.16*max(light,0))+0.018*bevel*max(light,0);
-    color=lerp(color,float3(1,1,1),highlight);
+    float chroma=1.15*scale*pow(s.lens,3.0)*strength;
+    float2 split=s.normal*chroma/textureSize;
+    float3 clear=float3(unfiltered.SampleLevel(linearClamp,uv+split,0).r,
+        unfiltered.SampleLevel(linearClamp,uv,0).g,
+        unfiltered.SampleLevel(linearClamp,uv-split,0).b);
+    float3 color=lerp(frost,clear,(0.03+0.91*s.lens)*strength);
+    // Tint and optical light are separate shared layers, applied once.
     return float4(saturate(color),1);
 }
 )HLSL";
-struct Parameters {float textureSize[2],panelSize[2],panelOrigin[2],radius,blur,axis[2],padding[2];};
-static_assert(sizeof(Parameters)==48);
+struct Parameters {float textureSize[2],panelSize[2],panelOrigin[2],radius,blur,pixelScale,refraction,padding[2];float lenses[3][4]{},lensStyles[3][4]{};};
+static_assert(sizeof(Parameters)==144);
 struct Texture
 {
     com_ptr<ID3D11Texture2D> value;
@@ -126,233 +248,61 @@ struct Texture
     unsigned width{},height{};
     void Reset(){value=nullptr;source=nullptr;target=nullptr;width=height=0;}
 };
-struct CropReadLease
-{
-    ID3D11DeviceContext* context{};IDXGIKeyedMutex* mutex{};
-    ~CropReadLease(){context->Flush();mutex->ReleaseSync(0);}
-};
-HRESULT LastError(){auto error=GetLastError();return HRESULT_FROM_WIN32(error?error:ERROR_GEN_FAILURE);}
-
-// This lease never touches D3D, Composition, or CaptureChannel from its watchdog.
-// It is joined and destroyed while both HWNDs are still owned by the host.
-struct SnapshotAffinityLease
-{
-    HWND body{},shadow{};
-    DWORD bodyBefore{},shadowBefore{},bodyReadback{},shadowReadback{};
-    std::mutex mutex;
-    PTP_TIMER watchdog{};
-    ULONGLONG deadline{};
-    HRESULT restoreError{E_PENDING};
-    bool restored{};
-
-    SnapshotAffinityLease(HWND bodyValue,HWND shadowValue,DWORD bodyAffinity,DWORD shadowAffinity)
-        :body(bodyValue),shadow(shadowValue),bodyBefore(bodyAffinity),shadowBefore(shadowAffinity),
-         bodyReadback(bodyAffinity),shadowReadback(shadowAffinity)
-    {
-        watchdog=CreateThreadpoolTimer([](PTP_CALLBACK_INSTANCE,void* value,PTP_TIMER)noexcept
-        {static_cast<SnapshotAffinityLease*>(value)->Restore();},this,nullptr);
-        check_bool(watchdog!=nullptr);
-    }
-    ~SnapshotAffinityLease(){CloseWatchdog();Restore();}
-    void CloseWatchdog()noexcept
-    {
-        if(!watchdog)return;
-        SetThreadpoolTimer(watchdog,nullptr,0,0);
-        WaitForThreadpoolTimerCallbacks(watchdog,TRUE);
-        CloseThreadpoolTimer(watchdog);watchdog=nullptr;
-    }
-    static HRESULT SetAndRead(HWND window,DWORD expected,DWORD& actual)noexcept
-    {
-        if(!IsWindow(window))return HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE);
-        if(!SetWindowDisplayAffinity(window,expected))return LastError();
-        if(!GetWindowDisplayAffinity(window,&actual))return LastError();
-        return actual==expected?S_OK:E_ACCESSDENIED;
-    }
-    void Expose()
-    {
-        check_hresult(SetAndRead(body,WDA_NONE,bodyReadback));
-        check_hresult(SetAndRead(shadow,WDA_NONE,shadowReadback));
-    }
-    void Arm(unsigned milliseconds)noexcept
-    {
-        deadline=GetTickCount64()+milliseconds;
-        FILETIME now{};GetSystemTimeAsFileTime(&now);
-        ULARGE_INTEGER due{};due.LowPart=now.dwLowDateTime;due.HighPart=now.dwHighDateTime;
-        // Absolute time also expires across sleep; the watchdog restores on wake.
-        due.QuadPart+=uint64_t(milliseconds)*10000;
-        FILETIME when{due.LowPart,due.HighPart};SetThreadpoolTimer(watchdog,&when,0,0);
-    }
-    HRESULT Restore()noexcept
-    {
-        std::lock_guard lock(mutex);
-        if(restored)return S_OK;
-        auto bodyError=SetAndRead(body,bodyBefore,bodyReadback);
-        auto shadowError=SetAndRead(shadow,shadowBefore,shadowReadback);
-        restoreError=FAILED(bodyError)?bodyError:shadowError;
-        restored=SUCCEEDED(restoreError);return restoreError;
-    }
-    bool Restored()noexcept{std::lock_guard lock(mutex);return restored;}
-    void Describe(wchar_t* text,size_t capacity,wchar_t const* phase)noexcept
-    {
-        std::lock_guard lock(mutex);
-        swprintf_s(text,capacity,L"QA final-UI snapshot: %s; affinity %s; body=%lu expected=%lu; shadow=%lu expected=%lu; restore=0x%08X",
-            phase,restored?L"restored and read back":L"not yet restored",bodyReadback,bodyBefore,shadowReadback,shadowBefore,static_cast<unsigned>(restoreError));
-    }
-};
 }
 
 struct LiquidGlass::Impl
 {
-    HWND body{},shadow{};
-    com_ptr<ID3D11Device> device;com_ptr<ID3D11DeviceContext> context;
-    CaptureChannel capture;
+    com_ptr<ID3D11Device> device;
+    com_ptr<ID3D11DeviceContext> context;
     CompositionGraphicsDevice graphics{nullptr};
-    HMONITOR monitor{};RECT monitorBounds{};
-    winrt::Windows::Graphics::SizeInt32 captureSize{};
-    com_ptr<ID3D11VertexShader> vertex;com_ptr<ID3D11PixelShader> prefilterShader,horizontal,glass;
-    com_ptr<ID3D11SamplerState> sampler;com_ptr<ID3D11Buffer> parameters;
-    com_ptr<ID3D11Query> gpuStart,gpuMaterialEnd,gpuEnd,gpuDisjoint;bool gpuPending{};
-    uint64_t gpuSamples{};double gpuTotal{},gpuMaximum{},gpuPipelineTotal{},gpuPipelineMaximum{};
-    Texture crop,prefilter,scratch,output;
-    Texture incoming;
-    com_ptr<IDXGIKeyedMutex> cropRead;
-    int panelCropX{},panelCropY{};
-    CompositionDrawingSurface surface{nullptr};
-    bool enabled{},hidden{true},solid{},ready{},affinitySaved{},waitingCaptureFrame{};
-    DWORD bodyAffinity{},shadowAffinity{};
-    ULONGLONG lastTick{},retryAfter{},waitingSince{};uint64_t frames{};
-    std::wstring reason{L"Disabled"};
-    wchar_t const* operation{L"monitor capture or GPU material"};
-    std::unique_ptr<SnapshotAffinityLease> snapshot;
-    RECT snapshotPanel{};
-    wchar_t snapshotSummary[384]{};
+    com_ptr<ID3D11VertexShader> vertex;
+    com_ptr<ID3D11PixelShader> prefilterShader,horizontal,glass,optics;
+    com_ptr<ID3D11SamplerState> sampler;
+    com_ptr<ID3D11Buffer> parameters;
+    Texture crop,prefilter,scratch,output,lighting;
+    float lightingRadius{-1},lightingScale{-1},lightingTension{-2};
+    unsigned lightingWidth{},lightingHeight{};
+    CompositionDrawingSurface lightingSurface{nullptr};
+    bool closed{},legacyLightMode{};HRESULT closeResult{S_OK};
 
-    Impl(HWND bodyValue,HWND shadowValue,ID3D11Device* deviceValue,ID3D11DeviceContext* contextValue,CompositionGraphicsDevice const& graphicsValue)
-        :body(bodyValue),shadow(shadowValue),graphics(graphicsValue)
+    Impl(ID3D11Device* deviceValue,ID3D11DeviceContext* contextValue,CompositionGraphicsDevice const& graphicsValue)
+        :graphics(graphicsValue)
     {device.copy_from(deviceValue);context.copy_from(contextValue);}
-
-    ~Impl(){Stop();RestoreAffinity();}
-    void RestoreAffinity()noexcept
+    ~Impl()
     {
-        if(!affinitySaved)return;
-        bool restored=true;
-        if(IsWindow(body)&&!SetWindowDisplayAffinity(body,bodyAffinity))restored=false;
-        if(IsWindow(shadow)&&!SetWindowDisplayAffinity(shadow,shadowAffinity))restored=false;
-        if(restored)affinitySaved=false;
+        Close();
     }
-    void Exclude()
-    {
-        operation=L"read original body/shadow capture affinity";
-        if(!affinitySaved)
-        {
-            check_bool(GetWindowDisplayAffinity(body,&bodyAffinity));
-            check_bool(GetWindowDisplayAffinity(shadow,&shadowAffinity));
-            affinitySaved=true;
-        }
-        operation=L"exclude body from capture";
-        if(!SetWindowDisplayAffinity(body,WDA_EXCLUDEFROMCAPTURE))throw hresult_error(LastError());
-        operation=L"exclude shadow from capture";
-        if(!SetWindowDisplayAffinity(shadow,WDA_EXCLUDEFROMCAPTURE))throw hresult_error(LastError());
-        operation=L"verify body/shadow capture exclusion";
-        DWORD bodyValue{},shadowValue{};
-        check_bool(GetWindowDisplayAffinity(body,&bodyValue));check_bool(GetWindowDisplayAffinity(shadow,&shadowValue));
-        if(bodyValue!=WDA_EXCLUDEFROMCAPTURE||shadowValue!=WDA_EXCLUDEFROMCAPTURE)throw hresult_error(E_ACCESSDENIED,L"Window capture exclusion did not persist");
-    }
-    void Stop()noexcept
-    {
-        // Cancel/join the independent watchdog before any host HWND can die.
-        // Lifecycle cleanup then restores the ordinary pre-capture affinities.
-        if(snapshot)
-        {
-            snapshot->CloseWatchdog();snapshot->Restore();
-            snapshot->Describe(snapshotSummary,std::size(snapshotSummary),L"cancelled by renderer lifecycle; worker stopped");
-            snapshot.reset();
-        }
-        ready=false;waitingCaptureFrame=false;capture.Stop();monitor=nullptr;
-        cropRead=nullptr;incoming.Reset();crop.Reset();prefilter.Reset();scratch.Reset();output.Reset();
-        try{if(surface)surface.Close();}catch(...){}surface=nullptr;
-        vertex=nullptr;prefilterShader=nullptr;horizontal=nullptr;glass=nullptr;sampler=nullptr;parameters=nullptr;
-        gpuStart=nullptr;gpuMaterialEnd=nullptr;gpuEnd=nullptr;gpuDisjoint=nullptr;gpuPending=false;
+    HRESULT Close() noexcept {
+        if(closed)return closeResult;closed=true;
+        try{if(lightingSurface)lightingSurface.Close();}catch(...){closeResult=to_hresult();}
+        lightingSurface=nullptr;
         if(context){context->ClearState();context->Flush();}
+        return closeResult;
     }
-    void Fail(HRESULT error,wchar_t const* failedOperation)noexcept
-    {
-        Stop();RestoreAffinity();retryAfter=GetTickCount64()+5000;
-        wchar_t text[256]{};swprintf_s(text,L"Fallback: %s (0x%08X); enabled intent retained; retry in 5s",failedOperation,static_cast<unsigned>(error));
-        reason=text;
-    }
+
+
+
     void CreateShaders()
     {
+        if(vertex&&prefilterShader&&horizontal&&glass&&optics&&parameters&&sampler)return;
+        vertex=nullptr;prefilterShader=nullptr;horizontal=nullptr;glass=nullptr;optics=nullptr;parameters=nullptr;sampler=nullptr;
         auto compile=[](char const* entry,char const* profile)
         {
             com_ptr<ID3DBlob> code,error;
             check_hresult(D3DCompile(shader,sizeof(shader)-1,"GlassDesk.LiquidGlass",nullptr,nullptr,entry,profile,D3DCOMPILE_OPTIMIZATION_LEVEL3,0,code.put(),error.put()));
             return code;
         };
-        auto vs=compile("VS","vs_4_0"),ps=compile("Prefilter","ps_4_0"),hs=compile("Horizontal","ps_4_0"),gs=compile("Glass","ps_4_0");
+        auto vs=compile("VS","vs_4_0"),ps=compile("Prefilter","ps_4_0"),hs=compile("Horizontal","ps_4_0"),gs=compile("Glass","ps_4_0"),os=compile("Optics","ps_4_0");
         check_hresult(device->CreateVertexShader(vs->GetBufferPointer(),vs->GetBufferSize(),nullptr,vertex.put()));
         check_hresult(device->CreatePixelShader(ps->GetBufferPointer(),ps->GetBufferSize(),nullptr,prefilterShader.put()));
         check_hresult(device->CreatePixelShader(hs->GetBufferPointer(),hs->GetBufferSize(),nullptr,horizontal.put()));
         check_hresult(device->CreatePixelShader(gs->GetBufferPointer(),gs->GetBufferSize(),nullptr,glass.put()));
+        check_hresult(device->CreatePixelShader(os->GetBufferPointer(),os->GetBufferSize(),nullptr,optics.put()));
         D3D11_SAMPLER_DESC sampling{};sampling.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sampling.AddressU=sampling.AddressV=sampling.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;sampling.MaxLOD=D3D11_FLOAT32_MAX;
         check_hresult(device->CreateSamplerState(&sampling,sampler.put()));
         D3D11_BUFFER_DESC constants{};constants.ByteWidth=sizeof(Parameters);constants.Usage=D3D11_USAGE_DEFAULT;constants.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
         check_hresult(device->CreateBuffer(&constants,nullptr,parameters.put()));
-        D3D11_QUERY_DESC query{D3D11_QUERY_TIMESTAMP,0};
-        check_hresult(device->CreateQuery(&query,gpuStart.put()));check_hresult(device->CreateQuery(&query,gpuMaterialEnd.put()));check_hresult(device->CreateQuery(&query,gpuEnd.put()));
-        query.Query=D3D11_QUERY_TIMESTAMP_DISJOINT;check_hresult(device->CreateQuery(&query,gpuDisjoint.put()));
-    }
-    void Start(HMONITOR value)
-    {
-        Stop();Exclude();
-        if(!device||!context||!graphics)throw hresult_error(E_FAIL,L"D3D rendering device is unavailable");
-        operation=L"compile HLSL/create D3D11 material shaders";CreateShaders();
-        MONITORINFO info{sizeof(info)};check_bool(GetMonitorInfoW(value,&info));monitorBounds=info.rcMonitor;monitor=value;
-        captureSize={monitorBounds.right-monitorBounds.left,monitorBounds.bottom-monitorBounds.top};
-        StartCaptureWorker();
-    }
-    void StartCaptureWorker()
-    {
-        // QA restart deliberately gets a fresh shared texture: no WGC frame or
-        // keyed-mutex state from the unexcluded screenshot interval can survive.
-        cropRead=nullptr;incoming.Reset();
-        D3D11_TEXTURE2D_DESC desc{};desc.Width=captureSize.Width;desc.Height=captureSize.Height;
-        desc.MipLevels=desc.ArraySize=1;desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.SampleDesc.Count=1;
-        desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
-        desc.MiscFlags=D3D11_RESOURCE_MISC_SHARED_NTHANDLE|D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-        check_hresult(device->CreateTexture2D(&desc,nullptr,incoming.value.put()));
-        incoming.width=desc.Width;incoming.height=desc.Height;cropRead=incoming.value.as<IDXGIKeyedMutex>();
-        operation=L"start job-owned WGC capture worker";
-        capture.Start(device.get(),incoming.value.get(),monitor,desc.Width,desc.Height);
-        waitingSince=GetTickCount64();waitingCaptureFrame=true;reason=L"Starting: waiting for first monitor frame";
-    }
-    HRESULT FinishSnapshot()noexcept
-    {
-        if(!snapshot)return S_FALSE;
-        snapshot->CloseWatchdog();
-        auto restored=snapshot->Restore();
-        snapshot->Describe(snapshotSummary,std::size(snapshotSummary),FAILED(restored)?L"restore failed; material frozen and worker stopped":L"restored; worker pending UI-thread restart");
-        if(FAILED(restored))return restored; // Never sample a possibly unexcluded HWND.
-        snapshot.reset();
-        try
-        {
-            operation=L"synchronize restored QA snapshot capture exclusion";
-            check_hresult(DwmFlush());
-            operation=L"resume job-owned capture after QA final-UI snapshot";
-            if(enabled&&!hidden&&!solid)
-            {
-                StartCaptureWorker();
-                wcscpy_s(snapshotSummary,L"QA final-UI snapshot: restored and read back body=17 shadow=17; worker restarted on UI thread with fresh shared texture; enablement unchanged");
-            }
-            return S_OK;
-        }
-        catch(...)
-        {
-            auto error=to_hresult();Fail(error,operation);
-            wcscpy_s(snapshotSummary,L"QA final-UI snapshot: affinity restored and read back; capture restart failed; ordinary fallback active; enablement retained");
-            return error;
-        }
     }
     void Ensure(Texture& texture,unsigned width,unsigned height)
     {
@@ -377,241 +327,148 @@ struct LiquidGlass::Impl
         context->Draw(3,0);input[0]=input[1]=nullptr;render=nullptr;
         context->PSSetShaderResources(0,2,input);context->OMSetRenderTargets(1,&render,nullptr);
     }
-    void Present()
+    void PresentTexture(Texture const& rendered,CompositionDrawingSurface& destinationSurface)
     {
-        if(!surface||surface.Size().Width!=float(output.width)||surface.Size().Height!=float(output.height))
+        if(!destinationSurface||destinationSurface.Size().Width!=float(rendered.width)||destinationSurface.Size().Height!=float(rendered.height))
         {
-            if(surface)surface.Close();
-            surface=graphics.CreateDrawingSurface({float(output.width),float(output.height)},DirectXPixelFormat::B8G8R8A8UIntNormalized,DirectXAlphaMode::Premultiplied);
+            if(destinationSurface)destinationSurface.Close();
+            destinationSurface=graphics.CreateDrawingSurface({float(rendered.width),float(rendered.height)},DirectXPixelFormat::B8G8R8A8UIntNormalized,DirectXAlphaMode::Premultiplied);
         }
-        auto interop=surface.as<ABI::Windows::UI::Composition::ICompositionDrawingSurfaceInterop>();
+        auto interop=destinationSurface.as<ABI::Windows::UI::Composition::ICompositionDrawingSurfaceInterop>();
         com_ptr<IDXGISurface> destination;POINT offset{};
         check_hresult(interop->BeginDraw(nullptr,__uuidof(IDXGISurface),destination.put_void(),&offset));
         try
         {
             auto texture=destination.as<ID3D11Texture2D>();
-            context->CopySubresourceRegion(texture.get(),0,static_cast<UINT>(offset.x),static_cast<UINT>(offset.y),0,output.value.get(),0,nullptr);
+            D3D11_TEXTURE2D_DESC target{};texture->GetDesc(&target);
+            if(offset.x<0||offset.y<0||uint64_t(offset.x)+rendered.width>target.Width
+                ||uint64_t(offset.y)+rendered.height>target.Height)throw hresult_error(E_BOUNDS);
+            context->CopySubresourceRegion(texture.get(),0,static_cast<UINT>(offset.x),static_cast<UINT>(offset.y),0,rendered.value.get(),0,nullptr);
         }
         catch(...){interop->EndDraw();throw;}
         check_hresult(interop->EndDraw());
     }
-    void Tick(RECT panel,float radius,float blur)
+    CompositionDrawingSurface Light(unsigned width,unsigned height,float radiusValue,float scale,float strain=0)
     {
-        if(!enabled||hidden||solid)return;
-        if(snapshot)
-        {
-            // Retain the exact already-presented material. Geometry changes end
-            // the QA window rather than stretching a diagnostic into new evidence.
-            if(!snapshot->Restored()&&GetTickCount64()<snapshot->deadline&&EqualRect(&panel,&snapshotPanel))return;
-            if(FAILED(FinishSnapshot()))return;
-        }
-        auto now=GetTickCount64();if(now<retryAfter||now-lastTick<34)return;lastTick=now;
-        auto current=MonitorFromRect(&panel,MONITOR_DEFAULTTONEAREST);
-        if(!capture.process||monitor!=current){Start(current);now=GetTickCount64();}
-        operation=L"receive WGC monitor frame";
-        check_hresult(device->GetDeviceRemovedReason());
-        auto childError=InterlockedCompareExchange(&capture.control->error,0,0);
-        if(childError!=E_PENDING)check_hresult(childError);
-        if(WaitForSingleObject(capture.process,0)==WAIT_OBJECT_0)throw hresult_error(E_FAIL,L"Capture worker exited");
-        if(gpuPending)
-        {
-            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT timing{};UINT64 first{},materialEnd{},last{};
-            if(context->GetData(gpuDisjoint.get(),&timing,sizeof(timing),D3D11_ASYNC_GETDATA_DONOTFLUSH)==S_OK&&
-                context->GetData(gpuStart.get(),&first,sizeof(first),D3D11_ASYNC_GETDATA_DONOTFLUSH)==S_OK&&
-                context->GetData(gpuMaterialEnd.get(),&materialEnd,sizeof(materialEnd),D3D11_ASYNC_GETDATA_DONOTFLUSH)==S_OK&&
-                context->GetData(gpuEnd.get(),&last,sizeof(last),D3D11_ASYNC_GETDATA_DONOTFLUSH)==S_OK)
-            {
-                gpuPending=false;
-                if(!timing.Disjoint&&timing.Frequency&&last>=first)
-                {
-                    double material=1000.0*double(materialEnd-first)/double(timing.Frequency),pipeline=1000.0*double(last-first)/double(timing.Frequency);
-                    ++gpuSamples;gpuTotal+=material;gpuMaximum=std::max(gpuMaximum,material);gpuPipelineTotal+=pipeline;gpuPipelineMaximum=std::max(gpuPipelineMaximum,pipeline);
-                }
-            }
-        }
-        auto size=captureSize;
-        auto width=panel.right-panel.left,height=panel.bottom-panel.top;
-        if(width<=0||height<=0)return;
-        int padding=int(std::ceil(std::min(blur,100.0f)+17));
-        int left=std::clamp(int(panel.left-monitorBounds.left-padding),0,size.Width-1);
-        int top=std::clamp(int(panel.top-monitorBounds.top-padding),0,size.Height-1);
-        int right=std::clamp(int(panel.right-monitorBounds.left+padding),left+1,size.Width);
-        int bottom=std::clamp(int(panel.bottom-monitorBounds.top+padding),top+1,size.Height);
-        operation=L"allocate GPU material textures";
-        capture.Request({left,top,right,bottom});
-        auto locked=cropRead->AcquireSync(1,0);
-        if(locked==WAIT_TIMEOUT)
-        {
-            if(waitingCaptureFrame&&CaptureWaitExpired(now,waitingSince))throw hresult_error(HRESULT_FROM_WIN32(WAIT_TIMEOUT),L"Monitor capture returned no frames");
-            return;
-        }
-        if(locked!=S_OK)throw hresult_error(FAILED(locked)?locked:E_FAIL);
-        {
-            CropReadLease lease{context.get(),cropRead.get()};
-            if(InterlockedCompareExchange(&capture.control->frameRequest,0,0)!=InterlockedCompareExchange(&capture.control->request,0,0))return;
-            Ensure(crop,static_cast<unsigned>(right-left),static_cast<unsigned>(bottom-top));
-            D3D11_BOX copied{0,0,0,crop.width,crop.height,1};
-            context->CopySubresourceRegion(crop.value.get(),0,0,0,0,incoming.value.get(),0,&copied);
-        }
-        unsigned divisor=blur>=12?4u:blur>=4?2u:1u;
-        unsigned filteredWidth=(crop.width+divisor-1)/divisor,filteredHeight=(crop.height+divisor-1)/divisor;
-        Ensure(prefilter,filteredWidth,filteredHeight);Ensure(scratch,filteredWidth,filteredHeight);
-        Ensure(output,static_cast<unsigned>(width),static_cast<unsigned>(height));
-        bool measure=!gpuPending;if(measure){context->Begin(gpuDisjoint.get());context->End(gpuStart.get());}
-        Parameters constants{{float(crop.width),float(crop.height)},{float(width),float(height)},
-            {float(panel.left-monitorBounds.left-left),float(panel.top-monitorBounds.top-top)},radius,std::clamp(blur,0.0f,100.0f),{}, {}};
-        panelCropX=panel.left-monitorBounds.left-left;panelCropY=panel.top-monitorBounds.top-top;
-        operation=L"HLSL blur/refraction and Composition copy";
-        try
-        {
-            Pass(crop,prefilter,prefilterShader.get(),constants);
-            Pass(prefilter,scratch,horizontal.get(),constants);
-            Pass(scratch,output,glass.get(),constants,crop.source.get());
-            if(measure)context->End(gpuMaterialEnd.get());Present();
-        }
-        catch(...)
-        {
-            if(measure){context->End(gpuEnd.get());context->End(gpuDisjoint.get());}
-            throw;
-        }
-        if(measure){context->End(gpuEnd.get());context->End(gpuDisjoint.get());gpuPending=true;}
-        check_hresult(device->GetDeviceRemovedReason());ready=true;waitingCaptureFrame=false;++frames;
-        wchar_t gpu[128]{};
-        if(gpuSamples)swprintf_s(gpu,L"; GPU filter avg=%.3fms max=%.3fms; pipeline span avg=%.3fms (%llu samples)",gpuTotal/double(gpuSamples),gpuMaximum,gpuPipelineTotal/double(gpuSamples),static_cast<unsigned long long>(gpuSamples));
-        reason=L"Running: WGC monitor → GPU crop → HLSL blur/refraction → Composition; <=29.4 Hz; frames="+std::to_wstring(frames)+L"; worker="+std::to_wstring(capture.Pid())+gpu;
+        legacyLightMode=true;
+        if(!width||!height||width>4096||height>4096||uint64_t(width)*height>1'000'000
+            ||!std::isfinite(radiusValue)||!std::isfinite(scale)||!std::isfinite(strain)
+            ||scale<=0||radiusValue<0)return nullptr;
+        if(lightingSurface&&width==lightingWidth&&height==lightingHeight&&radiusValue==lightingRadius&&scale==lightingScale&&strain==lightingTension)return lightingSurface;
+        CreateShaders();Ensure(lighting,width,height);
+        Parameters constants{{float(width),float(height)},{float(width),float(height)},{0,0},radiusValue,0,scale,0,{}};
+        constants.padding[0]=strain;
+        Texture empty;Pass(empty,lighting,optics.get(),constants);PresentTexture(lighting,lightingSurface);
+        lightingWidth=width;lightingHeight=height;lightingRadius=radiusValue;lightingScale=scale;lightingTension=strain;
+        return lightingSurface;
     }
+
 };
 
-LiquidGlass::LiquidGlass(HWND body,HWND shadow,ID3D11Device* device,ID3D11DeviceContext* context,CompositionGraphicsDevice const& graphics)
-    :impl(std::make_unique<Impl>(body,shadow,device,context,graphics)){}
+LiquidGlass::LiquidGlass(HWND,HWND,ID3D11Device* device,ID3D11DeviceContext* context,CompositionGraphicsDevice const& graphics)
+    :impl(std::make_unique<Impl>(device,context,graphics)){}
 LiquidGlass::~LiquidGlass()=default;
-void LiquidGlass::SetEnabled(bool value)noexcept
+HRESULT LiquidGlass::Close()noexcept{return impl->Close();}
+
+void LiquidGlass::SetEnabled(bool)noexcept{}
+void LiquidGlass::Suspend(bool,bool)noexcept{}
+void LiquidGlass::Tick(RECT,float,float)noexcept{}
+HRESULT LiquidGlass::SaveReferencePreview(wchar_t const* path,unsigned width,unsigned height,float radius,float scale,unsigned theme,float tension)noexcept
 {
-    if(impl->enabled==value)return;impl->enabled=value;impl->retryAfter=0;
-    if(!value){impl->Stop();impl->RestoreAffinity();impl->reason=impl->affinitySaved?L"Disabled; capture affinity restoration failed":L"Disabled";}
-    else impl->reason=impl->hidden?L"Paused: host hidden; enabled intent retained":L"Starting";
-}
-void LiquidGlass::Suspend(bool hidden,bool solid)noexcept
-{
-    if(hidden==impl->hidden&&solid==impl->solid)return;
-    impl->hidden=hidden;impl->solid=solid;impl->retryAfter=0;
-    if(hidden||solid){impl->Stop();impl->RestoreAffinity();}
-    if(impl->enabled)impl->reason=hidden?L"Paused: host hidden; enabled intent retained":solid?L"Fallback: solid/high-contrast policy; enabled intent retained":L"Starting";
-}
-void LiquidGlass::Tick(RECT panel,float radius,float blur)noexcept
-{try{impl->Tick(panel,radius,blur);}catch(...){impl->Fail(to_hresult(),impl->operation);}}
-bool LiquidGlass::Enabled()const noexcept{return impl->enabled;}
-bool LiquidGlass::Ready()const noexcept{return impl->ready;}
-std::wstring LiquidGlass::Status()const{return impl->reason;}
-LiquidGlassStats LiquidGlass::Stats()const noexcept
-{
-    uint64_t textureBytes=(uint64_t(impl->crop.width)*impl->crop.height+uint64_t(impl->prefilter.width)*impl->prefilter.height+uint64_t(impl->scratch.width)*impl->scratch.height+
-        uint64_t(impl->output.width)*impl->output.height+uint64_t(impl->output.width)*impl->output.height)*4;
-    if(impl->capture.process)textureBytes+=uint64_t(impl->captureSize.Width)*impl->captureSize.Height*12;
-    uint64_t callbacks{},received{};
-    if(impl->capture.control){callbacks=InterlockedCompareExchange(&impl->capture.control->callbacks,0,0);received=InterlockedCompareExchange(&impl->capture.control->received,0,0);}
-    return {impl->frames,textureBytes,impl->gpuSamples,static_cast<unsigned>(impl->captureSize.Width),static_cast<unsigned>(impl->captureSize.Height),
-        impl->output.width,impl->output.height,impl->gpuSamples?impl->gpuTotal/double(impl->gpuSamples):0,impl->gpuMaximum,
-        impl->gpuSamples?impl->gpuPipelineTotal/double(impl->gpuSamples):0,impl->gpuPipelineMaximum,callbacks,received,impl->capture.Pid()};
-}
-CompositionDrawingSurface LiquidGlass::Surface()const{return impl->surface;}
-HRESULT LiquidGlass::BeginDiagnosticSnapshot(unsigned durationMilliseconds)noexcept
-{
-    if(durationMilliseconds<500||durationMilliseconds>5000)return E_INVALIDARG;
-    if(impl->snapshot)return HRESULT_FROM_WIN32(ERROR_BUSY);
-    if(!impl->enabled||impl->hidden||impl->solid||!impl->ready||impl->waitingCaptureFrame||!impl->surface||!impl->output.value||!impl->capture.process)
-        return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+    if(!path||!*path||width<2||height<2||width>2048||height>2048||!std::isfinite(scale)||scale<.5f||scale>3||theme>3||!std::isfinite(tension)||std::abs(tension)>1.15f)return E_INVALIDARG;
+    // This fixture generates its own grid input and never reads desktop pixels.
     try
     {
-        impl->operation=L"prepare QA final-UI snapshot of a ready material frame";
-        check_hresult(impl->device->GetDeviceRemovedReason());
-        if(WaitForSingleObject(impl->capture.process,0)!=WAIT_TIMEOUT)throw hresult_error(E_FAIL,L"Capture worker is not running");
-        check_bool(GetWindowRect(impl->body,&impl->snapshotPanel));
-        if(impl->snapshotPanel.right-impl->snapshotPanel.left!=static_cast<int>(impl->output.width)||
-            impl->snapshotPanel.bottom-impl->snapshotPanel.top!=static_cast<int>(impl->output.height))
-            return HRESULT_FROM_WIN32(ERROR_NOT_READY);
-        DWORD body{},shadow{};
-        check_bool(GetWindowDisplayAffinity(impl->body,&body));check_bool(GetWindowDisplayAffinity(impl->shadow,&shadow));
-        if(body!=WDA_EXCLUDEFROMCAPTURE||shadow!=WDA_EXCLUDEFROMCAPTURE)
-            throw hresult_error(E_ACCESSDENIED,L"QA snapshot requires verified body/shadow capture exclusion");
-        impl->snapshot=std::make_unique<SnapshotAffinityLease>(impl->body,impl->shadow,body,shadow);
-        // Finish ownership cleanup before making either HWND capturable. The
-        // processed output and Composition surface remain alive and untouched.
-        handle stoppedWorker;
-        check_bool(DuplicateHandle(GetCurrentProcess(),impl->capture.process,GetCurrentProcess(),stoppedWorker.put(),SYNCHRONIZE,FALSE,0));
-        impl->capture.Stop();
-        auto exited=WaitForSingleObject(stoppedWorker.get(),0);
-        if(exited!=WAIT_OBJECT_0)throw hresult_error(exited==WAIT_FAILED?LastError():HRESULT_FROM_WIN32(WAIT_TIMEOUT),L"QA snapshot worker shutdown was not confirmed");
-        impl->cropRead=nullptr;impl->incoming.Reset();
-        impl->operation=L"temporarily expose body/shadow for a QA final-UI screenshot";
-        impl->snapshot->Expose();impl->snapshot->Arm(durationMilliseconds);
-        check_hresult(DwmFlush());
-        if(impl->snapshot->Restored()||GetTickCount64()>=impl->snapshot->deadline)
+        impl->CreateShaders();unsigned margin=unsigned(std::ceil(40*scale)),cw=width+2*margin,ch=height+2*margin;
+        auto pattern=[&](unsigned x,unsigned y)
         {
-            impl->FinishSnapshot();return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
-        }
-        impl->reason=L"QA final-UI snapshot: material frozen; worker stopped; external screenshot window open; automatic affinity restore armed";
-        return S_OK;
-    }
-    catch(...)
-    {
-        auto error=to_hresult();
-        // A partial exposure is rolled back to the exact pre-QA affinities and
-        // normal sampling when possible. Failed restoration remains frozen;
-        // failed restart follows the ordinary material fallback path.
-        if(impl->snapshot)impl->FinishSnapshot();else impl->Fail(error,impl->operation);
-        return error;
-    }
-}
-HRESULT LiquidGlass::EndDiagnosticSnapshot()noexcept{return impl->FinishSnapshot();}
-std::wstring LiquidGlass::DiagnosticSnapshotStatus()const
-{
-    if(impl->snapshot)
-    {
-        wchar_t status[384]{};
-        impl->snapshot->Describe(status,std::size(status),impl->snapshot->Restored()?
-            L"watchdog restored affinity; material frozen until UI resumes":L"active: material frozen; worker stopped; external screenshot window open");
-        return status;
-    }
-    return *impl->snapshotSummary?impl->snapshotSummary:L"QA final-UI snapshot: inactive; never requested";
-}
-HRESULT LiquidGlass::SaveDiagnostic(wchar_t const* path)noexcept
-{
-    if(!path||!*path)return E_INVALIDARG;
-    if(!impl->ready||!impl->output.value)return HRESULT_FROM_WIN32(ERROR_NOT_READY);
-    try
-    {
-        auto saveTexture=[&](ID3D11Texture2D* texture,wchar_t const* target)
-        {
-        D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);desc.Usage=D3D11_USAGE_STAGING;
-        desc.BindFlags=desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
-        com_ptr<ID3D11Texture2D> staging;check_hresult(impl->device->CreateTexture2D(&desc,nullptr,staging.put()));
-        impl->context->CopyResource(staging.get(),texture);D3D11_MAPPED_SUBRESOURCE pixels{};
-        check_hresult(impl->context->Map(staging.get(),0,D3D11_MAP_READ,0,&pixels));
-        try
-        {
-            com_ptr<IWICImagingFactory> factory;check_hresult(CoCreateInstance(CLSID_WICImagingFactory2,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(factory.put())));
-            com_ptr<IWICStream> stream;check_hresult(factory->CreateStream(stream.put()));check_hresult(stream->InitializeFromFilename(target,GENERIC_WRITE));
-            com_ptr<IWICBitmapEncoder> encoder;check_hresult(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put()));check_hresult(encoder->Initialize(stream.get(),WICBitmapEncoderNoCache));
-            com_ptr<IWICBitmapFrameEncode> frame;check_hresult(encoder->CreateNewFrame(frame.put(),nullptr));check_hresult(frame->Initialize(nullptr));check_hresult(frame->SetSize(desc.Width,desc.Height));
-            WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;check_hresult(frame->SetPixelFormat(&format));
-            check_hresult(frame->WritePixels(desc.Height,pixels.RowPitch,pixels.RowPitch*desc.Height,static_cast<BYTE*>(pixels.pData)));
-            check_hresult(frame->Commit());check_hresult(encoder->Commit());
-        }
-        catch(...){impl->context->Unmap(staging.get(),0);throw;}
-        impl->context->Unmap(staging.get(),0);
+            float fx=float(x)/cw,fy=float(y)/ch;
+            float r=theme==1?27.f:theme==2?90+120*fy:250.f;
+            float g=theme==1?32.f:theme==2?140+60*fx:250.f;
+            float b=theme==1?42.f:theme==2?210-90*fy:250.f;
+            if(theme!=3)
+            {
+                bool grid=x%unsigned(48*scale)<unsigned(1.2f*scale)||y%unsigned(48*scale)<unsigned(1.2f*scale);
+                if(grid){r=theme==1?95.f:150.f;g=theme==1?102.f:157.f;b=theme==1?113.f:169.f;}
+                if(fx>.14f&&fx<.24f&&fy>.10f&&fy<.92f){r=theme==1?75.f:98.f;g=theme==1?90.f:122.f;b=theme==1?165.f:238.f;}
+                if(fy>.57f&&fy<.66f&&fx>.09f&&fx<.92f){r=theme==1?158.f:223.f;g=theme==1?95.f:132.f;b=theme==1?118.f:152.f;}
+            }
+            return 0xff000000u|(unsigned(std::clamp(r,0.f,255.f))<<16)|(unsigned(std::clamp(g,0.f,255.f))<<8)|unsigned(std::clamp(b,0.f,255.f));
         };
-        saveTexture(impl->output.value.get(),path);
-        if(impl->panelCropX>=0&&impl->panelCropY>=0&&unsigned(impl->panelCropX)+impl->output.width<=impl->crop.width&&unsigned(impl->panelCropY)+impl->output.height<=impl->crop.height)
+        std::vector<unsigned> input(size_t(cw)*ch);for(unsigned y=0;y<ch;++y)for(unsigned x=0;x<cw;++x)input[size_t(y)*cw+x]=pattern(x,y);
+        impl->Ensure(impl->crop,cw,ch);impl->context->UpdateSubresource(impl->crop.value.get(),0,nullptr,input.data(),cw*4,0);
+        impl->Ensure(impl->prefilter,(cw+3)/4,(ch+3)/4);impl->Ensure(impl->scratch,(cw+3)/4,(ch+3)/4);impl->Ensure(impl->output,width,height);
+        impl->Light(width,height,radius,scale,tension);
+        auto read=[&](Texture const& tex)
         {
-            D3D11_TEXTURE2D_DESC desc{};impl->output.value->GetDesc(&desc);desc.BindFlags=0;
-            com_ptr<ID3D11Texture2D> reference;check_hresult(impl->device->CreateTexture2D(&desc,nullptr,reference.put()));
-            D3D11_BOX box{static_cast<UINT>(impl->panelCropX),static_cast<UINT>(impl->panelCropY),0,static_cast<UINT>(impl->panelCropX)+desc.Width,static_cast<UINT>(impl->panelCropY)+desc.Height,1};
-            impl->context->CopySubresourceRegion(reference.get(),0,0,0,0,impl->crop.value.get(),0,&box);
-            auto backgroundPath=std::wstring(path)+L".background.png";saveTexture(reference.get(),backgroundPath.c_str());
+            D3D11_TEXTURE2D_DESC desc{};tex.value->GetDesc(&desc);desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+            com_ptr<ID3D11Texture2D> staging;check_hresult(impl->device->CreateTexture2D(&desc,nullptr,staging.put()));impl->context->CopyResource(staging.get(),tex.value.get());
+            std::vector<unsigned> result(size_t(tex.width)*tex.height);D3D11_MAPPED_SUBRESOURCE data{};check_hresult(impl->context->Map(staging.get(),0,D3D11_MAP_READ,0,&data));
+            for(unsigned y=0;y<tex.height;++y)std::memcpy(result.data()+size_t(y)*tex.width,static_cast<BYTE*>(data.pData)+size_t(y)*data.RowPitch,tex.width*4);
+            impl->context->Unmap(staging.get(),0);return result;
+        };
+        auto light=read(impl->lighting);unsigned outWidth=cw*2;
+        std::vector<unsigned> result(size_t(outWidth)*ch);
+        Parameters constants{{float(cw),float(ch)},{float(width),float(height)},{float(margin),float(margin)},radius,20*scale,scale,0,{}};
+        for(unsigned mode=0;mode<2;++mode)
+        {
+            constants.refraction=0;constants.padding[0]=tension;impl->Pass(impl->crop,impl->prefilter,impl->prefilterShader.get(),constants);
+            impl->Pass(impl->prefilter,impl->scratch,impl->horizontal.get(),constants);
+            impl->Pass(impl->scratch,impl->output,impl->glass.get(),constants,impl->crop.source.get());auto rendered=read(impl->output);
+            for(unsigned y=0;y<ch;++y)for(unsigned x=0;x<cw;++x)
+            {
+                unsigned color=input[size_t(y)*cw+x];
+                auto distance=[&](float px,float py)
+                {
+                    return SurfaceDistance(px-float(margin),py-float(margin),float(width),float(height),radius,scale,tension);
+                };
+                // Match the ordinary native host's contact shadow in this
+                // generated fixture; it is not desktop-material evidence.
+                if(distance(float(x)+.5f,float(y)+.5f)>0)
+                {
+                    float d=std::max(0.f,distance(float(x)+.5f,float(y)+.5f-4*scale));
+                    float shadow=(24.f/255)*std::exp(-d*d/(128*scale*scale));unsigned shaded=0xff000000;
+                    for(unsigned shift:{0u,8u,16u})shaded|=unsigned(std::lround(((color>>shift)&255)*(1-shadow)))<<shift;
+                    color=shaded;
+                }
+                if(x>=margin&&x<margin+width&&y>=margin&&y<margin+height)
+                {
+                    unsigned px=x-margin,py=y-margin;
+                    float sd=SurfaceDistance(float(px)+.5f,float(py)+.5f,float(width),float(height),radius,scale,tension);
+                    float coverage=std::clamp(.5f-sd,0.f,1.f);auto index=size_t(py)*width+px;unsigned glass=rendered[index],shine=light[index];
+                    float lightAmount=mode?1.0f:0.0f;float alpha=float(shine>>24)/255*lightAmount;unsigned blended=0xff000000;
+                    for(unsigned shift:{0u,8u,16u})
+                    {
+                        float material=((glass>>shift)&255)*.76f+255*.24f;
+                        material=material*(1-alpha)+((shine>>shift)&255)*lightAmount;
+                        float channel=((color>>shift)&255)*(1-coverage)+material*coverage;
+                        blended|=unsigned(std::lround(std::clamp(channel,0.f,255.f)))<<shift;
+                    }
+                    color=blended;
+                }
+                result[size_t(y)*outWidth+x+mode*cw]=color;
+            }
         }
+        com_ptr<IWICImagingFactory> factory;check_hresult(CoCreateInstance(CLSID_WICImagingFactory2,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(factory.put())));
+        com_ptr<IWICStream> stream;check_hresult(factory->CreateStream(stream.put()));check_hresult(stream->InitializeFromFilename(path,GENERIC_WRITE));
+        com_ptr<IWICBitmapEncoder> encoder;check_hresult(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put()));check_hresult(encoder->Initialize(stream.get(),WICBitmapEncoderNoCache));
+        com_ptr<IWICBitmapFrameEncode> frame;check_hresult(encoder->CreateNewFrame(frame.put(),nullptr));check_hresult(frame->Initialize(nullptr));check_hresult(frame->SetSize(outWidth,ch));
+        WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;check_hresult(frame->SetPixelFormat(&format));
+        check_hresult(frame->WritePixels(ch,outWidth*4,outWidth*ch*4,reinterpret_cast<BYTE*>(result.data())));check_hresult(frame->Commit());check_hresult(encoder->Commit());
         return S_OK;
     }
     catch(...){return to_hresult();}
 }
+CompositionDrawingSurface LiquidGlass::OpticalSurface(unsigned width,unsigned height,float radius,float scale,float tension)noexcept
+{try{return impl->Light(width,height,radius,scale,tension);}catch(...){return nullptr;}}
+bool LiquidGlass::Enabled()const noexcept{return false;}
+bool LiquidGlass::Ready()const noexcept{return false;}
+bool LiquidGlass::MatchesFrame(RECT,float,float)const noexcept{return false;}
+std::wstring LiquidGlass::Status()const{return L"Disabled: screen capture removed; procedural highlight only";}
+LiquidGlassStats LiquidGlass::Stats()const noexcept{return {};}
+CompositionDrawingSurface LiquidGlass::Surface()const{return nullptr;}
+HRESULT LiquidGlass::SaveDiagnostic(wchar_t const*)noexcept{return E_NOTIMPL;}
+HRESULT LiquidGlass::BeginDiagnosticSnapshot(unsigned)noexcept{return E_NOTIMPL;}
+HRESULT LiquidGlass::EndDiagnosticSnapshot()noexcept{return E_NOTIMPL;}
+std::wstring LiquidGlass::DiagnosticSnapshotStatus()const{return L"Disabled: screenshot snapshot support was removed with desktop capture";}
 }

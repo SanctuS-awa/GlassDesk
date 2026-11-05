@@ -6,7 +6,10 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cmath>
+#include <utility>
 #include "NativeApi.h"
+#include "AccessibleSurfaceHit.h"
 
 namespace gd
 {
@@ -22,7 +25,8 @@ struct AccessibleState
     std::mutex mutex;
     HWND hwnd{};
     IRawElementProviderFragment* root{}; // Borrowed while the host owns the provider.
-    RECT rectangle{}; unsigned dpi{96}; bool visible{};
+    RECT rectangle{}; unsigned dpi{96}; bool visible{},closing{};
+    input::AccessibleSurfaceShape surfaceShape{};
     std::wstring name{L"GlassDesk 音乐小组件"};
     std::vector<AccessibleItem> items;
 };
@@ -167,7 +171,10 @@ public:
         {
             std::lock_guard lock(state->mutex);if(!state->hwnd || !state->visible)return UIA_E_ELEMENTNOTAVAILABLE;
             if(x<state->rectangle.left||y<state->rectangle.top||x>=state->rectangle.right||y>=state->rectangle.bottom)return S_OK;
+            if(state->dpi==0)return S_OK;
             auto px=(x-state->rectangle.left)*96/state->dpi, py=(y-state->rectangle.top)*96/state->dpi;
+            if(!input::AccessibleSurfaceContainsDips(state->surfaceShape,
+                static_cast<float>(px),static_cast<float>(py)))return S_OK;
             for(auto item=state->items.rbegin();item!=state->items.rend();++item)
                 if(px>=item->x && py>=item->y && px<item->x+item->width && py<item->y+item->height){target=item->id;found=true;break;}
             if(!found){ if(state->root){*result=state->root;(*result)->AddRef();} return S_OK; }
@@ -177,7 +184,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetFocus(IRawElementProviderFragment** result) override {if(!result)return E_POINTER;*result=nullptr;return S_OK;}
     HRESULT STDMETHODCALLTYPE Invoke() override
     {
-        std::lock_guard lock(state->mutex); if(!state->hwnd || !state->visible)return UIA_E_ELEMENTNOTAVAILABLE;
+        std::lock_guard lock(state->mutex); if(state->closing || !state->hwnd || !state->visible)return UIA_E_ELEMENTNOTAVAILABLE;
         auto item=std::find_if(state->items.begin(),state->items.end(),[this](auto const& entryData){return entryData.id==id;});
         if(item==state->items.end())return UIA_E_ELEMENTNOTAVAILABLE;
         if(!item->enabled)return UIA_E_ELEMENTNOTENABLED;
@@ -185,7 +192,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE SetValue(double entryData) override
     {
-        std::lock_guard lock(state->mutex);if(!state->hwnd || !state->visible)return UIA_E_ELEMENTNOTAVAILABLE;
+        std::lock_guard lock(state->mutex);if(state->closing || !state->hwnd || !state->visible)return UIA_E_ELEMENTNOTAVAILABLE;
         auto item=std::find_if(state->items.begin(),state->items.end(),[this](auto const& entry){return entry.id==id;});
         if(item==state->items.end())return UIA_E_ELEMENTNOTAVAILABLE;
         if(!item->enabled)return UIA_E_ELEMENTNOTENABLED;
@@ -203,4 +210,17 @@ public:
 };
 inline ComPtr<ElementProvider> MakeElement(std::shared_ptr<AccessibleState> const& state,int id,bool root)
 { return Microsoft::WRL::Make<ElementProvider>(state,id,root); }
+
+// Keep HWND-backed identity available while UIA disconnects its references.
+// Block new input posts first, then invalidate identity and drain queued input
+// in Host::Shutdown. The callback is injectable for no-window CPU regression.
+template<class Disconnect>
+HRESULT DisconnectAccessibleProvider(std::shared_ptr<AccessibleState> const& state,
+    IRawElementProviderSimple* provider,Disconnect&& disconnect)
+{
+    {std::lock_guard lock(state->mutex);state->closing=true;}
+    const HRESULT result=provider?std::forward<Disconnect>(disconnect)(provider):S_OK;
+    {std::lock_guard lock(state->mutex);state->hwnd=nullptr;state->root=nullptr;state->visible=false;state->items.clear();}
+    return result;
+}
 }

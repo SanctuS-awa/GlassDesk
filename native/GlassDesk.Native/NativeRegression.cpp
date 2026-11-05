@@ -1,6 +1,6 @@
-// Hidden, in-process ABI/DPI/lifetime regression fixture. It never shows a
-// window, injects pointer input, or changes Windows settings. Desktop input and
-// compositor appearance are separately verified by the primary GUI workflow.
+// The default ABI/DPI/lifetime mode stays hidden. The explicit --topmost-dll
+// mode exercises visibility entirely outside the virtual desktop. Neither mode
+// injects input or changes Windows settings; presented UI is verified separately.
 #include "GlassDeskNative.cpp"
 #include <iostream>
 #include <thread>
@@ -8,6 +8,7 @@
 #include <cwchar>
 #include <dxgi1_4.h>
 #include <atomic>
+#include <filesystem>
 
 namespace
 {
@@ -168,6 +169,119 @@ void WriteTypographyResult(TypographyResult const& result)
     std::cout<<"{\"abiVersion\":2,\"v1Size\":64,\"v2Size\":96,\"abiInfoSize\":24,\"metricsSize\":24,\"cacheStatsSize\":40,\"hhmmCombinations\":1440,\"hhmmDeltaDip\":"<<result.timeDelta
         <<",\"secondsRepresentativeDeltaDip\":"<<result.secondsDelta<<",\"auditedNonSimulatedGlyphRuns\":"<<result.auditedGlyphRuns<<",\"formats\":"<<result.stats.formats<<",\"layouts\":"<<result.stats.layouts<<",\"layoutsCreated\":"<<result.stats.layoutsCreated<<",\"measureDrawSharedCache\":true,\"v1LegacyCompatible\":true}";
 }
+int MaterialSamples(wchar_t const* directory)
+{
+    std::filesystem::create_directories(directory);ContextLifetime context{nullptr,GDDestroy};HWND window{};
+    check_hresult(GDCreate(nullptr,nullptr,&context.context,&window));auto host=gd::FromContext(context.context);
+    Require(host->liquid!=nullptr,"material GPU device available");
+    for(unsigned theme=0;theme<4;++theme)
+    {
+        auto path=std::filesystem::path(directory)/(L"material-"+std::to_wstring(theme)+L".png");
+        check_hresult(host->liquid->SaveReferencePreview(path.c_str(),540,360,42,1.5f,theme));
+    }
+    auto capsule=std::filesystem::path(directory)/L"capsule.png";
+    check_hresult(host->liquid->SaveReferencePreview(capsule.c_str(),368,64,32,2,0));
+    Require(!host->liquidEnabled&&host->liquid->Stats().workerPid==0&&!IsWindowVisible(window),"synthetic previews must not capture or show desktop windows");
+    std::cout<<"{\"passed\":true,\"nativeGpuSamples\":5,\"captureStarted\":false,\"left\":\"frosted input simulation + shared light\",\"right\":\"frosted input simulation + shared light\"}\n";return 0;
+}
+int TensionSamples(wchar_t const* directory)
+{
+    std::filesystem::create_directories(directory);
+    ContextLifetime context{nullptr,GDDestroy};HWND window{};check_hresult(GDCreate(nullptr,nullptr,&context.context,&window));
+    auto host=gd::FromContext(context.context);
+    for(auto sample:{std::pair{L"tension-pull.png",1.0f},std::pair{L"tension-recoil.png",-.42f},std::pair{L"tension-rest.png",0.0f}})
+    {
+        auto path=std::filesystem::path(directory)/sample.first;
+        check_hresult(host->liquid->SaveReferencePreview(path.c_str(),540,360,gd::SurfaceRadius(540,360,42,sample.second),1.5f,0,sample.second));
+    }
+    Require(host->liquid->Stats().workerPid==0&&!IsWindowVisible(window),"tension previews must not sample desktop or show windows");
+    std::cout<<"{\"passed\":true,\"syntheticGpuSamples\":3,\"captureStarted\":false,\"left\":\"plain frost simulation\",\"right\":\"shared procedural optical shader\"}\n";return 0;
+}
+int MaterialProfile()
+{
+    auto foreground=GetForegroundWindow();
+    ContextLifetime context{nullptr,GDDestroy};HWND window{};check_hresult(GDCreate(nullptr,nullptr,&context.context,&window));
+    auto host=gd::FromContext(context.context);
+    DWORD bodyBefore{},shadowBefore{};
+    check_bool(GetWindowDisplayAffinity(window,&bodyBefore));check_bool(GetWindowDisplayAffinity(host->shadow,&shadowBefore));
+    // Exercise the same logical visible path without showing a real HWND.
+    check_hresult(GDSetLiquidGlassEnabled(context.context,1));host->visible=true;host->UpdateLiquid();
+    host->liquid->SetEnabled(true);host->liquid->Suspend(false,false);
+    host->liquid->Tick(RECT{40,60,408,124},32,20);
+    Require(!host->liquid->Enabled()&&!host->liquid->Ready()&&host->liquid->Stats().workerPid==0,"legacy API must not enable capture");
+    host->visible=false;host->UpdateLiquid();
+    auto retainedShoulder=get_abi(host->shoulderGeometry);unsigned cases{};
+    for(unsigned dpiValue:{96u,144u,192u})
+    {
+        RECT suggestion{40,60,500,600};SendMessageW(window,WM_DPICHANGED,MAKELONG(dpiValue,dpiValue),reinterpret_cast<LPARAM>(&suggestion));
+        for(auto size:{std::pair{184.0f,32.0f},std::pair{320.0f,180.0f},std::pair{360.0f,512.0f},std::pair{3.0f,3.0f}})
+        {
+            GDFrame frame{size.first,size.second,std::min(24.0f,size.second/2),20,.24f,0};
+            check_hresult(GDApplyFrame(context.context,&frame));
+            for(auto const& geometry:{host->shoulderGeometry,host->meniscusGeometry})
+            {
+                auto offset=geometry.Offset(),extent=geometry.Size(),corner=geometry.CornerRadius();
+                Require(extent.x>=0&&extent.y>=0&&corner.x>=0&&corner.y>=0,"material geometry must stay valid through small morph frames");
+                Require(std::abs(extent.x+offset.x*2-host->cachedWidth)<.01f&&std::abs(extent.y+offset.y*2-host->cachedHeight)<.01f,"bevel must follow the actual pixel silhouette at each DPI");
+            }
+            auto optical=host->liquid->OpticalSurface(unsigned(host->cachedWidth),unsigned(host->cachedHeight),host->cachedRadius,host->Scale());
+            Require(optical!=nullptr,"procedural material shader must render without capture");
+            Require(get_abi(optical)==get_abi(host->liquid->OpticalSurface(unsigned(host->cachedWidth),unsigned(host->cachedHeight),host->cachedRadius,host->Scale())),"static material must reuse its optical surface");
+            auto light=host->borderBrush.EndPoint();
+            Require(std::abs(light.x-light.y*.55f)<.01f,"material light direction must stay fixed through aspect-ratio changes");
+            Require(get_abi(host->shoulderGeometry)==retainedShoulder,"morph must retain material resources");
+            frame.solid=1;check_hresult(GDApplyFrame(context.context,&frame));
+            Require(!host->bevel.IsVisible()&&!host->glass.IsVisible()&&!host->clearEdge.IsVisible()&&!host->liquidOverlay.IsVisible(),"solid fallback must suppress optical material layers");
+            frame.solid=0;check_hresult(GDApplyFrame(context.context,&frame));
+            host->visible=true;host->UpdateLiquid();
+            Require(host->opticalLight.IsVisible()==!host->fallback&&host->glass.IsVisible()==!host->fallback&&host->clearEdge.IsVisible()==!host->fallback,"capture-free material must restore system frost and optical light after fallback");
+            host->visible=false;host->UpdateLiquid();
+            ++cases;
+        }
+    }
+    Require(host->liquidEnabled&&!host->liquidReady&&!host->liquidPresented&&!host->liquidOverlay.IsVisible(),"enabled product material must never present captured pixels");
+    auto stats=host->liquid->Stats();
+    Require(stats.workerPid==0&&stats.frames==0&&stats.captureCallbacks==0&&stats.captureWidth==0,"visible material must not start monitor capture");
+    DWORD bodyAfter{},shadowAfter{};
+    check_bool(GetWindowDisplayAffinity(window,&bodyAfter));check_bool(GetWindowDisplayAffinity(host->shadow,&shadowAfter));
+    Require(bodyBefore==bodyAfter&&shadowBefore==shadowAfter,"no-capture material must not change screenshot affinity");
+    check_hresult(GDSetLiquidGlassEnabled(context.context,0));host->visible=true;host->UpdateLiquid();
+    Require(!host->opticalLight.IsVisible()&&!host->clearEdge.IsVisible()&&host->glass.IsVisible()==!host->fallback,"turning optics off preserves ordinary frost");
+    host->visible=false;host->UpdateLiquid();
+    Require(!IsWindowVisible(window)&&!IsWindowVisible(host->shadow)&&GetForegroundWindow()==foreground,"material smoke test stays hidden and preserves foreground");
+    std::cout<<"{\"passed\":true,\"testKind\":\"hidden material geometry and fallback\",\"cases\":"<<cases<<",\"dpi\":[96,144,192],\"captureStarted\":false,\"presentedVisualVerified\":false}\n";return 0;
+}
+int TensionProfile()
+{
+    ContextLifetime context{nullptr,GDDestroy};HWND window{};check_hresult(GDCreate(nullptr,nullptr,&context.context,&window));
+    auto host=gd::FromContext(context.context);check_hresult(GDSetLiquidGlassEnabled(context.context,1));
+    unsigned cases{};
+    for(unsigned dpiValue:{96u,144u,192u})
+    {
+        RECT suggestion{40,60,500,600};SendMessageW(window,WM_DPICHANGED,MAKELONG(dpiValue,dpiValue),reinterpret_cast<LPARAM>(&suggestion));
+        GDFrame frame{360,512,24,20,.24f,0};
+        for(float strain:{-1.0f,-.4f,0.0f,.4f,1.0f})
+        {
+            check_hresult(GDApplyFrameWithTension(context.context,&frame,strain));
+            float neckY=512*(strain>=0?.36f:.64f);
+            Require(host->Inside(180,neckY),"tension must preserve the content center");
+            Require(strain==0?host->Inside(2,neckY):std::abs(strain)<.8f||!host->Inside(2,neckY),"hit testing must follow the liquid neck");
+            HRGN region=CreateRectRgn(0,0,0,0);Require(GetWindowRgn(window,region)!=ERROR,"liquid input region exists");
+            Require(strain==0?bool(PtInRegion(region,LONG(2*host->Scale()),LONG(neckY*host->Scale()))):std::abs(strain)<.8f||!PtInRegion(region,LONG(2*host->Scale()),LONG(neckY*host->Scale())),"native input region must match the clipped neck");DeleteObject(region);
+            auto optical=host->liquid->OpticalSurface(unsigned(host->cachedWidth),unsigned(host->cachedHeight),host->cachedRadius,host->Scale(),strain);
+            Require(optical!=nullptr,"tension optical shader must render without capture");
+            Require(std::abs(host->cachedTension-strain)<.0001f,"clip must receive each current tension sample");++cases;
+        }
+        frame.solid=1;check_hresult(GDApplyFrameWithTension(context.context,&frame,1));
+        Require(host->EffectiveTension()==0&&host->cachedTension==0,"solid fallback removes deformation");
+        frame.solid=0;check_hresult(GDApplyFrame(context.context,&frame));
+        Require(host->surfaceTension==0,"legacy frame ABI restores the original static contour");
+    }
+    GDFrame frame{360,512,24,20,.24f,0};Require(GDApplyFrameWithTension(context.context,&frame,2)==E_INVALIDARG,"invalid strain must be rejected");
+    Require(!host->liquid->Enabled()&&host->liquid->Stats().workerPid==0,"tension must not enable desktop capture");
+    Require(!IsWindowVisible(window)&&!IsWindowVisible(host->shadow),"tension smoke remains hidden");
+    std::cout<<"{\"passed\":true,\"tensionCases\":"<<cases<<",\"dpi\":[96,144,192],\"captureStarted\":false,\"clipAndInputVerified\":true}\n";return 0;
+}
 int LoadedDllTypography(wchar_t const* path)
 {
     ModuleLifetime module{LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)};check_bool(module.module!=nullptr);
@@ -177,93 +291,42 @@ int LoadedDllTypography(wchar_t const* path)
     auto result=CheckTypography(context.context,api);Require(!IsWindowVisible(window)&&GetForegroundWindow()==foreground,"loaded-DLL typography test stays hidden and preserves foreground");
     std::cout<<"{\"passed\":true,\"testKind\":\"loaded DLL hidden typography ABI V2\",\"neverVisible\":true,\"systemSettingsChanged\":false,\"typography\":";WriteTypographyResult(result);std::cout<<"}\n";return 0;
 }
-int HiddenLiquid(wchar_t const* path)
+// Compatibility aliases now verify the capture-free material boundary. They
+// no longer capture the desktop or simulate abrupt worker termination.
+int HiddenLiquid(wchar_t const* /*path*/){return MaterialProfile();}
+int ActiveLiquidCycles(unsigned /*cycles*/){return MaterialProfile();}
+int CaptureOwnerExit(){return MaterialProfile();}
+int LoadedDllTopmost(wchar_t const* path)
 {
-    // Real monitor capture and real GPU post-processing, without showing either
-    // host HWND or injecting desktop input. Dynamic-background presentation is
-    // still a separate GUI acceptance check.
-    HWND window{};void* context{};check_hresult(GDCreate(nullptr,nullptr,&context,&window));
-    ContextLifetime lifetime{context,GDDestroy};auto host=gd::FromContext(context);
-    DWORD bodyBefore{},shadowBefore{};check_bool(GetWindowDisplayAffinity(window,&bodyBefore));check_bool(GetWindowDisplayAffinity(host->shadow,&shadowBefore));
-    RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);check_hresult(GDSetPlacement(context,work.left+80,work.top+80));
-    host->visible=true; // logical capture policy; the actual HWNDs stay hidden
-    check_hresult(GDSetLiquidGlassEnabled(context,1));
-    auto deadline=GetTickCount64()+7000;
-    while(GetTickCount64()<deadline&&!host->liquidReady){Pump();host->UpdateLiquid();Sleep(34);}
-    std::wstring status=host->liquid?host->liquid->Status():L"No renderer";
-    if(!host->liquidReady)
-    {
-        check_hresult(GDSetLiquidGlassEnabled(context,0));
-        DWORD bodyRestored{},shadowRestored{};check_bool(GetWindowDisplayAffinity(window,&bodyRestored));check_bool(GetWindowDisplayAffinity(host->shadow,&shadowRestored));
-        Require(bodyBefore==bodyRestored&&shadowBefore==shadowRestored,"failed WGC capture must restore exact affinities");
-        std::cout<<"{\"passed\":false,\"testKind\":\"never-visible real WGC GPU prototype\",\"captureAffinityRestoredOnFailure\":true,\"bodyBefore\":"<<bodyBefore<<",\"bodyAfter\":"<<bodyRestored<<",\"shadowBefore\":"<<shadowBefore<<",\"shadowAfter\":"<<shadowRestored<<",\"presentedVisualVerified\":false}\n";
-        std::wcerr<<L"WGC/GPU prototype did not become ready: "<<status<<L"\n";return 2;
-    }
-    DWORD bodyActive{},shadowActive{};check_bool(GetWindowDisplayAffinity(window,&bodyActive));check_bool(GetWindowDisplayAffinity(host->shadow,&shadowActive));
-    Require(bodyActive==WDA_EXCLUDEFROMCAPTURE&&shadowActive==WDA_EXCLUDEFROMCAPTURE,"both host and shadow capture exclusion readback");
-    Require(!IsWindowVisible(window)&&!IsWindowVisible(host->shadow),"capture prototype must never show HWNDs");
-    auto sampleUntil=GetTickCount64()+2000;
-    while(GetTickCount64()<sampleUntil){Pump();host->UpdateLiquid();Sleep(34);}
-    auto stats=host->liquid->Stats();
-    check_hresult(GDSaveLiquidGlassDiagnosticFrame(context,path));
-    check_hresult(GDSetVisible(context,0));
-    Require(host->liquidEnabled&&!host->liquid->Ready()&&!host->liquid->Surface(),"hidden capture must release surface and retain enablement intent");
-    check_hresult(GDSetLiquidGlassEnabled(context,0));
-    DWORD bodyAfter{},shadowAfter{};check_bool(GetWindowDisplayAffinity(window,&bodyAfter));check_bool(GetWindowDisplayAffinity(host->shadow,&shadowAfter));
-    Require(bodyBefore==bodyAfter&&shadowBefore==shadowAfter,"liquid disable must restore exact original capture affinity");
-    std::cout<<"{\"passed\":true,\"testKind\":\"never-visible real WGC GPU prototype\",\"bothWindowsExcluded\":true,\"bodyBefore\":"<<bodyBefore<<",\"bodyActive\":"<<bodyActive<<",\"bodyAfter\":"<<bodyAfter
-        <<",\"shadowBefore\":"<<shadowBefore<<",\"shadowActive\":"<<shadowActive<<",\"shadowAfter\":"<<shadowAfter<<",\"pauseReleasedSurface\":true,\"captureAffinityRestored\":true,\"presentedVisualVerified\":false,\"frames\":"<<stats.frames
-        <<",\"captureWidth\":"<<stats.captureWidth<<",\"captureHeight\":"<<stats.captureHeight<<",\"panelWidth\":"<<stats.panelWidth<<",\"panelHeight\":"<<stats.panelHeight
-        <<",\"estimatedTextureBytes\":"<<stats.estimatedTextureBytes<<",\"gpuSamples\":"<<stats.gpuSamples<<",\"gpuFilterAverageMilliseconds\":"<<stats.gpuAverageMilliseconds<<",\"gpuFilterMaximumMilliseconds\":"<<stats.gpuMaximumMilliseconds
-        <<",\"gpuPipelineSpanAverageMilliseconds\":"<<stats.gpuPipelineAverageMilliseconds<<",\"gpuPipelineSpanMaximumMilliseconds\":"<<stats.gpuPipelineMaximumMilliseconds
-        <<",\"captureCallbacks\":"<<stats.captureCallbacks<<",\"receivedCaptureFrames\":"<<stats.receivedCaptureFrames<<"}\n";
+    ModuleLifetime module{LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)};
+    check_bool(module.module!=nullptr);
+    auto create=Export<decltype(&GDCreate)>(module.module,"GDCreate");
+    auto destroy=Export<decltype(&GDDestroy)>(module.module,"GDDestroy");
+    auto place=Export<decltype(&GDSetPlacement)>(module.module,"GDSetPlacement");
+    auto visible=Export<decltype(&GDSetVisible)>(module.module,"GDSetVisible");
+    auto foreground=GetForegroundWindow();ContextLifetime context{nullptr,destroy};HWND window{};
+    check_hresult(create(nullptr,nullptr,&context.context,&window));
+    // Exercise the real visible-window path entirely outside the virtual desktop.
+    int x=GetSystemMetrics(SM_XVIRTUALSCREEN)+GetSystemMetrics(SM_CXVIRTUALSCREEN)+2048;
+    int y=GetSystemMetrics(SM_YVIRTUALSCREEN)+2048;
+    check_hresult(place(context.context,x,y));
+    check_hresult(visible(context.context,1));Pump();
+    Require((GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"show restores topmost without activation");
+    RECT before{};GetWindowRect(window,&before);
+    check_bool(SetWindowPos(window,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE));Pump();
+    Require((GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"visible host repairs explicit topmost demotion");
+    RECT after{};GetWindowRect(window,&after);
+    Require(EqualRect(&before,&after)&&after.left==x&&after.top==y,"z-order repair preserves offscreen geometry");
+    check_hresult(visible(context.context,0));
+    check_bool(SetWindowPos(window,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE));Pump();
+    Require(!IsWindowVisible(window)&&(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST)==0,"hidden host is neither shown nor forcibly raised");
+    check_hresult(visible(context.context,1));Pump();
+    Require((GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"show after hide repairs the topmost band again");
+    check_hresult(visible(context.context,0));
+    check_hresult(destroy(context.context));context.context=nullptr;
+    Require(!IsWindow(window)&&GetForegroundWindow()==foreground,"topmost fixture releases its window and preserves foreground");
+    std::cout<<"{\"passed\":true,\"testKind\":\"loaded DLL offscreen topmost repair\",\"cases\":6,\"foregroundPreserved\":true,\"systemSettingsChanged\":false,\"desktopInputSent\":false}\n";
     return 0;
-}
-int ActiveLiquidCycles(unsigned cycles)
-{
-    Require(cycles>0&&cycles<=1000,"cycle count must be 1..1000");
-    HWND window{};void* context{};check_hresult(GDCreate(nullptr,nullptr,&context,&window));
-    ContextLifetime lifetime{context,GDDestroy};auto host=gd::FromContext(context);
-    com_ptr<IDXGIAdapter> adapter;check_hresult(host->d3d.as<IDXGIDevice>()->GetAdapter(adapter.put()));
-    auto memory=adapter.as<IDXGIAdapter3>();
-    auto usage=[&]() {
-        DXGI_QUERY_VIDEO_MEMORY_INFO local{},shared{};
-        check_hresult(memory->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_LOCAL,&local));
-        check_hresult(memory->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,&shared));
-        return local.CurrentUsage+shared.CurrentUsage;
-    };
-    auto before=usage();host->visible=true;
-    for(unsigned index=1;index<=cycles;++index)
-    {
-        check_hresult(GDSetLiquidGlassEnabled(context,1));
-        auto deadline=GetTickCount64()+7000;
-        while(GetTickCount64()<deadline&&!host->liquidReady){Pump();host->UpdateLiquid();Sleep(16);}
-        Require(host->liquidReady,"active WGC cycle must receive a real frame");
-        auto worker=OpenProcess(SYNCHRONIZE,FALSE,host->liquid->Stats().workerPid);check_bool(worker!=nullptr);
-        check_hresult(GDSetLiquidGlassEnabled(context,0));
-        auto exited=WaitForSingleObject(worker,1000)==WAIT_OBJECT_0;CloseHandle(worker);
-        Require(exited,"disabling must terminate the owned capture worker");
-        DWORD body{},shadow{};check_bool(GetWindowDisplayAffinity(window,&body));check_bool(GetWindowDisplayAffinity(host->shadow,&shadow));
-        Require(body==0&&shadow==0&&!host->liquid->Surface(),"disable releases material and restores capture affinity");
-        auto until=GetTickCount64()+80;while(GetTickCount64()<until){Pump();Sleep(10);}
-        auto current=usage();
-        std::cout<<"{\"cycle\":"<<index<<",\"gpuUsageBytes\":"<<current<<",\"baselineGpuBytes\":"<<before<<",\"captureWorkerExited\":true}"<<std::endl;
-        Require(current<=before+128ull*1024*1024,"active capture cycles must not accumulate unbounded GPU memory");
-    }
-    Require(!IsWindowVisible(window)&&!IsWindowVisible(host->shadow),"native lifecycle fixture must never show a window");
-    std::cout<<"{\"passed\":true,\"testKind\":\"never-visible active WGC lifecycle\",\"cycles\":"<<cycles<<",\"baselineGpuBytes\":"<<before<<",\"finalGpuBytes\":"<<usage()<<"}"<<std::endl;
-    return 0;
-}
-int CaptureOwnerExit()
-{
-    HWND window{};void* context{};check_hresult(GDCreate(nullptr,nullptr,&context,&window));
-    auto host=gd::FromContext(context);host->visible=true;
-    check_hresult(GDSetLiquidGlassEnabled(context,1));
-    auto deadline=GetTickCount64()+7000;
-    while(GetTickCount64()<deadline&&!host->liquidReady){Pump();host->UpdateLiquid();Sleep(16);}
-    Require(host->liquidReady,"ownership fixture requires a live WGC worker");
-    std::cout<<"{\"ownerPid\":"<<GetCurrentProcessId()<<",\"workerPid\":"<<host->liquid->Stats().workerPid<<",\"abruptOwnerExit\":true}"<<std::endl;
-    ExitProcess(0); // Deliberately bypass destructors to test the kernel job boundary.
 }
 int LoadedDllTracking(wchar_t const* path)
 {
@@ -317,7 +380,12 @@ int wmain(int argc,wchar_t** argv)
         init_apartment(apartment_type::single_threaded);
         Require(!gd::CaptureWaitExpired(99,100),"pre-start timestamp must not underflow into a false capture timeout");
         Require(!gd::CaptureWaitExpired(5099,100)&&gd::CaptureWaitExpired(5100,100),"capture timeout must respect the five-second boundary");
+        if(argc==3&&std::wcscmp(argv[1],L"--material-samples")==0)return MaterialSamples(argv[2]);
+        if(argc==2&&std::wcscmp(argv[1],L"--material-profile")==0)return MaterialProfile();
+        if(argc==2&&std::wcscmp(argv[1],L"--tension-profile")==0)return TensionProfile();
+        if(argc==3&&std::wcscmp(argv[1],L"--tension-samples")==0)return TensionSamples(argv[2]);
         if(argc==3&&std::wcscmp(argv[1],L"--tracking-dll")==0)return LoadedDllTracking(argv[2]);
+        if(argc==3&&std::wcscmp(argv[1],L"--topmost-dll")==0)return LoadedDllTopmost(argv[2]);
         if(argc==3&&std::wcscmp(argv[1],L"--typography-dll")==0)return LoadedDllTypography(argv[2]);
         if(argc==3&&std::wcscmp(argv[1],L"--liquid-hidden")==0)return HiddenLiquid(argv[2]);
         if(argc==3&&std::wcscmp(argv[1],L"--liquid-cycles")==0)return ActiveLiquidCycles(static_cast<unsigned>(std::wcstoul(argv[2],nullptr,10)));

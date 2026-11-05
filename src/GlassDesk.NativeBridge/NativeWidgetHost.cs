@@ -10,11 +10,17 @@ namespace GlassDesk.NativeBridge;
 /// coordinates; native DPI scaling and pixel surface allocation are internal.
 /// Dispose scenes and platform message hooks before disposing this host.
 /// </summary>
-public sealed class NativeWidgetHost : IWidgetHost
+public sealed partial class NativeWidgetHost : IWidgetHost
 {
     [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
     [return:MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowTextW(nint window,string value);
+    [DllImport("user32.dll",SetLastError=true)]
+    [return:MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(nint window,nint after,int x,int y,int width,int height,uint flags);
+    [DllImport("user32.dll")]
+    [return:MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(nint window);
     public void SetTitle(string title){CheckThread();if(!SetWindowTextW(Handle,title))Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());}
     private readonly int ownerThread=Environment.CurrentManagedThreadId;
     private readonly NativeMethods.Callback callback;
@@ -23,6 +29,7 @@ public sealed class NativeWidgetHost : IWidgetHost
     private ContainerVisual? contentRoot;
     private HostContext context;
     private bool disposed;
+    private bool handlingCallbackFailure;
 
     public event Action<HostPointerEvent>? PointerEvent;
     public event Action<HostContext>? WindowContextChanged;
@@ -59,13 +66,23 @@ public sealed class NativeWidgetHost : IWidgetHost
         }
     }
 
-    public NativeWidgetHost()
+    public NativeWidgetHost(DesktopMaterialSession? materialSession=null,bool incidentHostShortTest=false,bool liquidGlassCapturePreview=false)
     {
         if(Thread.CurrentThread.GetApartmentState()!=ApartmentState.STA)
             throw new InvalidOperationException("NativeWidgetHost must be created on the application UI STA.");
+        MaterialSession=materialSession;
         TypographyAbi=NativeTypographyAbi.ReadAndValidate();
         callback=OnNativeEvent;
-        Marshal.ThrowExceptionForHR(NativeMethods.GDCreate(callback,0,out native,out var window));
+        nint window;
+        try{
+            if(materialSession is null)Marshal.ThrowExceptionForHR(NativeMethods.GDCreate(callback,0,out native,out window));
+            else{
+                if(liquidGlassCapturePreview!=materialSession.HostOptions.LiquidGlassCapturePreview)
+                    throw new InvalidOperationException("Native creation mode does not match the authorized desktop-material session.");
+                var creation=new DesktopCreation(materialSession.Backend,materialSession.SessionId,incidentHostShortTest,liquidGlassCapturePreview);
+                Marshal.ThrowExceptionForHR(GDCreateV2(callback,0,in creation,out native,out window));
+            }
+        }catch(Exception error){materialSession?.MarkFault($"native creation: 0x{error.HResult:X8}");throw;}
         Handle=window;
         nint compositorPointer=0,contentPointer=0;
         try
@@ -78,6 +95,7 @@ public sealed class NativeWidgetHost : IWidgetHost
         }
         catch
         {
+            materialSession?.MarkFault("native composition initialization failed");
             NativeMethods.GDDestroy(native);native=0;Handle=0;throw;
         }
         finally
@@ -109,6 +127,11 @@ public sealed class NativeWidgetHost : IWidgetHost
             if(value.Kind==100||value.Kind==(int)HostEventKind.DpiChanged)
                 RefreshContext();
             if(value.Kind==100)return;
+            if(value.Kind==(int)HostEventKind.SystemSettingsChanged&&value.ControlId==-3){
+                string reason=$"native experimental desktop material tripped: 0x{unchecked((uint)value.Value):X8}";
+                MaterialSession?.MarkFault(reason);
+                NativeError?.Invoke(reason);return;
+            }
             if(value.Kind==(int)HostEventKind.SystemSettingsChanged&&value.ControlId==-2)
                 NativeError?.Invoke($"native-window: 0x{unchecked((uint)value.Value):X8}");
             if(value.Kind==(int)HostEventKind.SystemSettingsChanged&&value.ControlId==-1)
@@ -118,7 +141,17 @@ public sealed class NativeWidgetHost : IWidgetHost
         catch(Exception error)
         {
             // A managed subscriber must not unwind into a Win32 WndProc.
-            try{NativeError?.Invoke($"native-callback: {error.GetType().Name} (0x{error.HResult:X8})");}catch{ }
+            if(handlingCallbackFailure)return;
+            handlingCallbackFailure=true;
+            try
+            {
+                string reason=$"native-callback: {error.GetType().Name} (0x{error.HResult:X8})";
+                // A queued coordinator teardown is too late for the remainder
+                // of the synchronous window dispatch. Trip the native gate now.
+                try{if(IsExperimentalDesktopMaterialCandidate)TripDesktopMaterial(reason);}catch{ }
+                try{NativeError?.Invoke(reason);}catch{ }
+            }
+            finally{handlingCallbackFailure=false;}
         }
     }
 
@@ -126,12 +159,34 @@ public sealed class NativeWidgetHost : IWidgetHost
     {
         CheckThread();
         var value=new NativeMethods.Frame(frame.Width,frame.Height,frame.Radius,frame.Blur,frame.TintOpacity,frame.Solid?1:0);
-        Marshal.ThrowExceptionForHR(NativeMethods.GDApplyFrame(native,in value));RefreshContext();
+        Marshal.ThrowExceptionForHR(NativeMethods.GDApplyFrameWithTension(native,in value,frame.SurfaceTension));RefreshContext();
+    }
+    /// <summary>Submits a candidate's DIP frame and physical screen position together.</summary>
+    public void ApplyPositionedFrame(HostFrame frame,int screenX,int screenY)
+    {
+        CheckThread();
+        var value=new NativeMethods.Frame(frame.Width,frame.Height,frame.Radius,frame.Blur,frame.TintOpacity,frame.Solid?1:0);
+        int result;
+        try {result=NativeMethods.GDApplyPositionedFrameWithTension(native,in value,frame.SurfaceTension,screenX,screenY);}
+        catch(EntryPointNotFoundException error)
+        {
+            throw new InvalidOperationException("GlassDesk.Native.dll requires atomic frame placement; use the DLL from this candidate build.",error);
+        }
+        Marshal.ThrowExceptionForHR(result);
+        RefreshContext();
     }
     public void SetPlacement(int screenX,int screenY)
     {CheckThread();Marshal.ThrowExceptionForHR(NativeMethods.GDSetPlacement(native,screenX,screenY));RefreshContext();}
     public void SetVisible(bool visible)
     {CheckThread();Marshal.ThrowExceptionForHR(NativeMethods.GDSetVisible(native,visible?1:0));}
+    /// <summary>Reassert the visible widget's topmost band after a foreground change, without activation or showing a hidden window.</summary>
+    public void EnsureTopmost()
+    {
+        CheckThread();
+        if(!IsWindowVisible(Handle))return;
+        const uint flags=0x0001|0x0002|0x0010|0x0200; // No size/move/activation/owner reordering.
+        if(!SetWindowPos(Handle,new nint(-1),0,0,0,0,flags))Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
+    }
     public void SetLiquidGlassEnabled(bool enabled)
     {CheckThread();Marshal.ThrowExceptionForHR(NativeMethods.GDSetLiquidGlassEnabled(native,enabled?1:0));}
 
@@ -221,6 +276,7 @@ public sealed class NativeWidgetHost : IWidgetHost
                 Marshal.ThrowExceptionForHR(NativeMethods.GDRenderSurfaceV2(native,widthDip,heightDip,pointer,(uint)values.Length,96,out result));
             return WinRT.MarshalInterface<CompositionDrawingSurface>.FromAbi(result);
         }
+        catch(Exception error){if(IsExperimentalDesktopMaterialCandidate)TripDesktopMaterial($"foreground surface: 0x{error.HResult:X8}");throw;}
         finally
         {
             if(result!=0)Marshal.Release(result);
@@ -244,6 +300,29 @@ public sealed class NativeWidgetHost : IWidgetHost
         finally{if(text!=0)Marshal.FreeHGlobal(text);if(locale!=0)Marshal.FreeHGlobal(locale);}
     }
 
+    public NativeInkBounds? MeasureTextInkBounds(SurfaceOp operation)
+    {
+        CheckThread();ArgumentNullException.ThrowIfNull(operation);
+        string? textValue=operation.Text;
+        if(operation.Kind is not (SurfaceOpKind.Text or SurfaceOpKind.MultilineText)||textValue is null||operation.TextRole==TextRole.Legacy)
+            throw new ArgumentException("Ink bounds require a non-legacy text operation with text.",nameof(operation));
+        if((TypographyAbi.Capabilities&NativeTypographyAbi.InkBoundsCapability)==0)return null;
+
+        nint text=0,locale=0;
+        try
+        {
+            text=Marshal.StringToHGlobalUni(textValue);
+            if(operation.LocaleName is not null)locale=Marshal.StringToHGlobalUni(operation.LocaleName);
+            var op=new NativeMethods.OpV2(operation,text,0,locale);
+            Marshal.ThrowExceptionForHR(NativeMethods.GDMeasureTextInkBoundsV2(native,in op,96,out var bounds));
+            if(!float.IsFinite(bounds.Left)||!float.IsFinite(bounds.Top)||!float.IsFinite(bounds.Right)||!float.IsFinite(bounds.Bottom)||
+                bounds.Right<bounds.Left||bounds.Bottom<bounds.Top)
+                throw new InvalidOperationException("GlassDesk.Native.dll returned invalid text ink bounds.");
+            return new(bounds.Left,bounds.Top,bounds.Right,bounds.Bottom);
+        }
+        finally{if(text!=0)Marshal.FreeHGlobal(text);if(locale!=0)Marshal.FreeHGlobal(locale);}
+    }
+
     public TypographyCacheStats TextCacheStats
     {
         get
@@ -256,9 +335,11 @@ public sealed class NativeWidgetHost : IWidgetHost
     public void Dispose()
     {
         if(disposed)return;CheckThread();disposed=true;
+        try{StopLiquidGlassCapture();}catch{}
         try{Marshal.ThrowExceptionForHR(NativeMethods.GDDestroy(native));}
         finally
         {
+            ReleaseLiquidGlassInkColorBrush();
             native=0;Handle=0;compositor=null;contentRoot=null;
             PointerEvent=null;WindowContextChanged=null;NativeError=null;GraphicsDeviceRestored=null;
             GC.KeepAlive(callback);
@@ -282,6 +363,8 @@ internal static partial class NativeMethods
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDGetComposition(nint context,out nint compositor,out nint content);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern unsafe int GDCreateCompositionPath(nint context,Vector2* points,uint count,float rounding,out nint path);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyFrame(nint context,in Frame frame);
+    [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyFrameWithTension(nint context,in Frame frame,float tension);
+    [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyPositionedFrameWithTension(nint context,in Frame frame,float tension,int screenX,int screenY);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetPlacement(nint context,int x,int y);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetVisible(nint context,int visible);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetLiquidGlassEnabled(nint context,int enabled);

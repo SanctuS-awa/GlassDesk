@@ -1,5 +1,7 @@
 using System.Numerics;
+using System.Diagnostics;
 using Windows.UI.Composition;
+using GlassDesk.NativeBridge;
 
 namespace GlassDesk.App;
 
@@ -10,6 +12,10 @@ internal sealed class CrossfadeSurfaceVisual : IDisposable
     readonly SpriteVisual _incoming, _outgoing;
     readonly CompositionSurfaceBrush _brush, _outgoingBrush;
     CompositionDrawingSurface? _surface, _outgoingSurface;
+    long _transitionStarted;
+    public bool IsTransitioning => _transitionStarted != 0
+        && Stopwatch.GetElapsedTime(_transitionStarted).TotalMilliseconds < 280;
+    LiquidGlassInkVisual? _incomingInk,_outgoingInk;
     public SpriteVisual Visual { get; }
 
     public CrossfadeSurfaceVisual(Compositor compositor)
@@ -27,6 +33,7 @@ internal sealed class CrossfadeSurfaceVisual : IDisposable
 
     public void Show(CompositionDrawingSurface replacement, Vector2 size, bool animate, int direction = 0)
     {
+        _incomingInk?.Dispose();_outgoingInk?.Dispose();
         var obsolete = _outgoingSurface;
         _outgoingBrush.Surface = _surface;
         _brush.Surface = replacement;
@@ -36,6 +43,7 @@ internal sealed class CrossfadeSurfaceVisual : IDisposable
         _incoming.StopAnimation("Opacity"); _incoming.Opacity = 1;
         _outgoing.StopAnimation("Opacity");
         if (!animate || _outgoingSurface is null) { Finish(); return; }
+        _transitionStarted = Stopwatch.GetTimestamp();
         _outgoing.Opacity = 1;
         // Both text/icon surfaces contain transparent surroundings. Fade the
         // new ink in too, so unrelated glyph strokes do not briefly double up.
@@ -64,14 +72,26 @@ internal sealed class CrossfadeSurfaceVisual : IDisposable
 
     public void Finish()
     {
+        _transitionStarted = 0;
         _incoming.StopAnimation("Opacity"); _incoming.Opacity = 1;
         _outgoing.StopAnimation("Opacity"); _outgoing.Opacity = 0;
         _incoming.StopAnimation("Offset.X"); _incoming.Offset = Vector3.Zero;
         _outgoing.StopAnimation("Offset.X"); _outgoing.Offset = Vector3.Zero;
     }
 
+    public void ApplyLiquidGlassInk(NativeWidgetHost host,Vector2 parentOffset,bool enabled)
+    {
+        if(!host.IsLiquidGlassCapture)return;
+        _incomingInk??=new(host,_incoming,_brush);
+        _outgoingInk??=new(host,_outgoing,_outgoingBrush);
+        var position=parentOffset+new Vector2(Visual.Offset.X,Visual.Offset.Y);
+        _incomingInk.Update(_surface,position+new Vector2(_incoming.Offset.X,_incoming.Offset.Y),Visual.Size,enabled);
+        _outgoingInk.Update(_outgoingSurface,position+new Vector2(_outgoing.Offset.X,_outgoing.Offset.Y),Visual.Size,enabled);
+    }
+
     public void Dispose()
     {
+        _incomingInk?.Dispose();_outgoingInk?.Dispose();
         Visual.Children.RemoveAll(); _brush.Surface = _outgoingBrush.Surface = null;
         _surface?.Dispose(); _outgoingSurface?.Dispose();
         Visual.Dispose(); _incoming.Dispose(); _outgoing.Dispose(); _brush.Dispose(); _outgoingBrush.Dispose();

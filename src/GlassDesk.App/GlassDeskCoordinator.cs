@@ -28,17 +28,13 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     long openSequence, geometryVersion;
     readonly DispatcherQueueTimer companionIdleTimer;
     WidgetPreferences? appearancePreview;
-    readonly NetEaseMediaAdapter media;
+    readonly IMediaAdapter media;
     readonly ProcessAudioVisualizationSource audio;
     readonly PluginHost plugins;
     readonly CapsuleContentPolicy contentPolicy=new();
-    readonly DispatcherQueueTimer motionTimer,clockTimer,timelineTimer,graphicsRetryTimer,pauseTimer,materialSnapshotTimer,cursorTimer,textToneTimer,mediaStateTimer;
-    HostContext? textToneContext;
-    nint textToneForeground;
-    bool lightText;
-    WidgetReadabilityDecision readability = new(false,true,true,0,"Awaiting an advisory background observation; user material settings apply.");
-    WidgetReadabilityDecision clockReadability = new(false,true,true,0,"Awaiting a clock-plate observation.");
-    (WidgetForm Form,bool Connected,float Tint,bool Liquid,bool Time,bool Date,bool Weekday)? readabilityMaterial;
+    readonly DispatcherQueueTimer motionTimer,clockTimer,timelineTimer,graphicsRetryTimer,pauseTimer,materialSnapshotTimer,cursorTimer,mediaStateTimer;
+    WidgetReadabilityDecision readability = new(false,false,true,0,"Manual black text; composed contrast not measured.");
+    WidgetReadabilityDecision clockReadability = new(false,false,true,0,"Manual black text; composed contrast not measured.");
     int materialSnapshotAttempts;
     readonly UISettings uiSettings=new();
     readonly Stopwatch uptime=Stopwatch.StartNew();
@@ -47,6 +43,9 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     SettingsWindow? settings;
     ResidencyProbe? qa;
     QaSnapshotRequests? snapshotRequests;
+#if GLASSDESK_UI_PREVIEW && GLASSDESK_SYSTEM_GLASS_PREVIEW
+    QaTransportFeedback? qaTransportFeedback;
+#endif
     bool disposed,quitting,solid,seeking,applyingHost,nativeRecoveryPending;
     bool effectsSubscribed,animationsSubscribed,powerSubscribed;
     string seekToken="";
@@ -66,6 +65,8 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     public string? ConnectionIssue=>notice??Media.Notice;
     public bool IsWidgetVisible=>controller.Visible;
     public bool IsUiPreview=>options.UiPreview;
+    public bool UsesLiquidGlassCapture=>host.IsLiquidGlassCapture;
+    public Windows.Graphics.IGeometrySource2D CreatePreviewGeometry(System.Numerics.Vector2[] points)=>host.CreatePolygonPath(points,.25f);
     public IReadOnlyList<PluginStatus> Plugins=>plugins.Statuses;
     public IReadOnlyList<PluginContentPage> PluginPages=>plugins.Pages;
     public string AudioStatus=>audio.Current.Reason??audio.Current.State.ToString();
@@ -77,12 +78,18 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     public GlassDeskCoordinator(LaunchOptions options,Action exit)
     {
         this.options=options;this.exit=exit;dispatcher=new(queue);store=new(options.DataDirectory);
-        Preferences=store.Load();notice=store.TakeLoadNotice();monitors=monitorService.GetMonitors();
+        Preferences=store.Load() with {MonitorId=null,AnchorX=.5,AnchorY=0};notice=store.TakeLoadNotice();monitors=monitorService.GetMonitors();
         pages=new(Preferences);
-        var monitor=monitors.FirstOrDefault(m=>m.Id==Preferences.MonitorId)??monitors.First(m=>m.Primary);
-        var anchor=new WidgetAnchor(monitor.WorkArea.X+Preferences.AnchorX*monitor.WorkArea.Width,monitor.WorkArea.Y+Preferences.AnchorY*monitor.Scale);
+        var monitor=monitors.First(m=>m.Primary);
+        var anchor=new WidgetAnchor(monitor.WorkArea.X+monitor.WorkArea.Width/2.0,monitor.WorkArea.Y);
         controller=new(Preferences,monitor,anchor);
-        host=new NativeWidgetHost();scene=new(host){CaptureTypographyDiagnostics=options.QaReport is not null};previousDpi=host.Context.Dpi;
+        materialSession=options.DesktopSession??(options.OwnedImageGlass||options.LiquidGlassCaptureGlass||options.LiquidGlassCapturePreview
+            ?throw new InvalidOperationException("实验必须在 XAML 启动前完成会话授权。")
+            :DesktopMaterialLaunch.CreateSession(options));
+        PrepareExperimentalCompositorGuard();
+        host=new NativeWidgetHost(materialSession,options.IncidentHostShortTest,options.LiquidGlassCapturePreview);scene=new(host){CaptureTypographyDiagnostics=options.QaReport is not null};previousDpi=host.Context.Dpi;
+        if(host.IsLiquidGlassCapture)controller.SetPhysicalBodyLimit(1024,Now);
+        host.SetLiquidGlassEnabled(Preferences.LiquidGlassEnabled);
         scene.RenderingFailed+=error=>RecoverGraphics(error,"artwork-transition");
         if(options.UiPreview)
         {
@@ -90,11 +97,28 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
                 .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0]??"preview";
             host.SetTitle($"GlassDesk UI Preview · {version}");
         }
-        system=new(host.Handle,dispatcher,diagnostics,options.Identity);foreground=new(dispatcher);media=new(dispatcher,diagnostics);
+        system=new(host.Handle,dispatcher,diagnostics,options.Identity);foreground=new(dispatcher);
+#if GLASSDESK_UI_PREVIEW && GLASSDESK_SYSTEM_GLASS_PREVIEW
+        media=options.QaSyntheticMedia?new QaSyntheticMediaAdapter(options.QaSyntheticMediaMode):new NetEaseMediaAdapter(dispatcher,diagnostics);
+#else
+        media=new NetEaseMediaAdapter(dispatcher,diagnostics);
+#endif
         audio=new(dispatcher);plugins=new(dispatcher,store.DirectoryPath);
         outside=new(dispatcher,press=>
         {
-            if(disposed||quitting||!OutsidePointerSnapshot.BelongsToVisibleDetails(press,openSequence,controller.Visible,controller.Form))return;
+            if(disposed||quitting||CandidateGraphicsStopped||!OutsidePointerSnapshot.BelongsToVisibleDetails(press,openSequence,controller.Visible,controller.Form))return;
+            if(press.OutsideDismissRegion&&homeNavigation is not null)
+            {
+                CloseHomeNavigationWindow();
+                if(scene.HomeNavExpanded){scene.SetHomeNavExpanded(false);Render();}
+            }
+            if(!press.OutsideRegisteredRegion)return;
+#if GLASSDESK_UI_PREVIEW && GLASSDESK_SYSTEM_GLASS_PREVIEW
+            // Explicit visual QA holds one real form without moving the user's
+            // mouse or repeatedly reopening it while they use another application.
+            // This mode is never evidence of outside-click/hover acceptance.
+            if(options.QaVisualState is not null)return;
+#endif
             pointerDown=false;pressedAction=-1;seeking=false;
             CommitBoardOnLeave();
             scene.SetPointerFeedback(-1);scene.SetCapture(PointerCaptureOwner.None,Now);
@@ -106,40 +130,26 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         plugins.CompanionChanged+=state=>{if(!disposed)TryScene(()=>{scene.SetMonotonicTime(Now);scene.SetCompanionState(state);WakeMotion();});};
         plugins.VisualsChanged+=visuals=>{if(!disposed)TryScene(()=>scene.SetPluginVisuals(visuals));};
         plugins.Changed+=()=>{if(!disposed){TryScene(()=>scene.SetPluginPages(plugins.Pages));Render();Changed?.Invoke();}};
-        motionTimer=queue.CreateTimer();motionTimer.Interval=TimeSpan.FromMilliseconds(16);motionTimer.Tick+=(_,_)=>{controller.Tick(Now);bool homeAnim=false;TryScene(()=>{scene.TickCompanion(Now);homeAnim=scene.TickHome(Now);});if(homeAnim)Render();if(!controller.NeedsTick&&!scene.SceneMotionActive){motionTimer.Stop();ScheduleCompanionIdle();}UpdateOutsideGeometry();};
+        motionTimer=queue.CreateTimer();motionTimer.Interval=TimeSpan.FromMilliseconds(16);motionTimer.Tick+=(_,_)=>{if(CandidateGraphicsStopped){motionTimer.Stop();return;}controller.Tick(Now);bool homeAnim=false;TryScene(()=>{scene.TickCompanion(Now);homeAnim=scene.TickHome(Now)|scene.TickOwnedGlass(Now);});if(homeAnim)Render();if(!controller.NeedsTick&&!scene.SceneMotionActive){motionTimer.Stop();ScheduleCompanionIdle();}UpdateOutsideGeometry();};
         clockTimer=queue.CreateTimer();clockTimer.IsRepeating=false;clockTimer.Tick+=(_,_)=>Render();
         cursorTimer=queue.CreateTimer();cursorTimer.Interval=TimeSpan.FromMilliseconds(33);cursorTimer.Tick+=(_,_)=>UpdateCursorGaze();
-        textToneTimer=queue.CreateTimer();textToneTimer.IsRepeating=false;textToneTimer.Interval=TimeSpan.FromMilliseconds(220);
-        textToneTimer.Tick+=(_,_)=>
-        {
-            if(disposed||quitting||!controller.Visible)return;
-            var next=WidgetTextToneProbe.ReadPolicy(host.Context,scene.TextBackgroundY,Preferences.TintOpacity,
-                false,lightText,scene.BodyUsesLargeClock?3:4.5,scene.BodyHasRequiredSecondary);
-            clockReadability=controller.Form==WidgetForm.Peek
-                ?WidgetTextToneProbe.ReadPolicy(host.Context,scene.ClockPlateBackgroundY,Preferences.TintOpacity,scene.ClockHasWhiteplate,clockReadability.LightInk,
-                    scene.ClockPlateUsesLargeClock?3:4.5,scene.ClockPlateHasRequiredSecondary)
-                :next;
-            readability=next;lightText=next.LightInk;
-            // Text directly on the adjustable shell follows its observed material.
-            // Panels with their own light film keep their separate panel ink.
-            bool textChanged=ApplySceneInk();
-            if(textChanged)Render();
-        };
         pauseTimer=queue.CreateTimer();pauseTimer.IsRepeating=false;pauseTimer.Tick+=(_,_)=>{if(contentPolicy.Tick(Now)){Render();WakeMotion();}UpdateContentTimers();};
         timelineTimer=queue.CreateTimer();timelineTimer.Interval=TimeSpan.FromMilliseconds(250);timelineTimer.Tick+=(_,_)=>TryScene(()=>scene.UpdateTimeline(Media,Stopwatch.GetTimestamp()));
         mediaStateTimer=queue.CreateTimer();mediaStateTimer.Interval=TimeSpan.FromMilliseconds(500);
-        mediaStateTimer.Tick+=(_,_)=>{if(!disposed&&!quitting&&controller.Visible&&Media.Connected)media.RefreshPlaybackState();};
+        mediaStateTimer.Tick+=(_,_)=>{if(!disposed&&!quitting&&controller.Visible&&Media.Connected)RefreshMediaPlaybackState();};
         graphicsRetryTimer=queue.CreateTimer();graphicsRetryTimer.Interval=TimeSpan.FromSeconds(2);graphicsRetryTimer.IsRepeating=false;graphicsRetryTimer.Tick+=(_,_)=>Render();
         materialSnapshotTimer=queue.CreateTimer();materialSnapshotTimer.Interval=TimeSpan.FromSeconds(1);materialSnapshotTimer.IsRepeating=false;
         materialSnapshotTimer.Tick+=(_,_)=>
         {
-            if(disposed||options.QaMaterialFrame is null)return;
+            if(disposed||CandidateGraphicsStopped||options.QaMaterialFrame is null)return;
             try{host.SaveLiquidGlassDiagnosticFrame(options.QaMaterialFrame);}
-            catch(Exception error){diagnostics.RecordError("qa-material",error);if(++materialSnapshotAttempts<5)materialSnapshotTimer.Start();}
+            catch(Exception error){if(host.IsExperimentalDesktopMaterialCandidate){StopExperimentalDesktopMaterial(error,"qa-material");return;}diagnostics.RecordError("qa-material",error);if(++materialSnapshotAttempts<5)materialSnapshotTimer.Start();}
         };
-        plugins.MaterialChanged+=(id,active)=>{if(!disposed&&id=="liquidglass"){try{host.SetLiquidGlassEnabled(active);if(active&&options.QaMaterialFrame is not null){materialSnapshotAttempts=0;materialSnapshotTimer.Start();}}catch(Exception error){diagnostics.RecordError("liquidglass",error);}Changed?.Invoke();}};
+        plugins.MaterialChanged+=(id,active)=>{if(!disposed&&!CandidateGraphicsStopped&&id=="liquidglass"){try{host.SetLiquidGlassEnabled(active);if(active&&options.QaMaterialFrame is not null){materialSnapshotAttempts=0;materialSnapshotTimer.Start();}}catch(Exception error){RecoverGraphics(error,"liquidglass");}Changed?.Invoke();}};
         controller.FormChanged+=form=>
         {
+            if(CandidateGraphicsStopped)return;
+            CloseHomeNavigationWindow();
             homeBackPressed=false;homePressedAction=-1;homeConsumeRelease=false;
             if(form!=WidgetForm.Details){CommitBoardOnLeave();CancelHomeFolderRead();}
             if(form==WidgetForm.Details)
@@ -150,40 +160,48 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
             }
             else if(scene.HomePage)scene.ResetHomeState();
             Render();
-            ScheduleTextTone();
+            if(CandidateGraphicsStopped)return;
             if(form==WidgetForm.Details)scene.BeginDetails(++openSequence,Now);else scene.EndDetails();
             UpdateOutsideGeometry();UpdatePlugins();WakeMotion();
         };
-        controller.VisibilityChanged+=visible=>{if(!visible)CommitBoardOnLeave();system.WidgetVisible=visible;host.SetVisible(visible);scene.SetSceneVisible(visible,Now);UpdateOutsideGeometry();contentPolicy.Tick(Now);Render();if(visible)ScheduleTextTone();else textToneTimer.Stop();UpdatePlugins();Changed?.Invoke();};
+        controller.VisibilityChanged+=visible=>{if(CandidateGraphicsStopped)return;if(!visible){CloseHomeNavigationWindow();CommitBoardOnLeave();}system.WidgetVisible=visible;host.SetVisible(visible);scene.SetSceneVisible(visible,Now);UpdateOutsideGeometry();contentPolicy.Tick(Now);Render();UpdatePlugins();Changed?.Invoke();};
         controller.PresentationChanged+=ApplyPresentation;
         controller.ActionRequested+=InvokeAction;
-        controller.PlacementCommitted+=OnPlacementCommitted;
         host.PointerEvent+=OnPointer;
         host.WindowContextChanged+=OnWindowContext;
-        host.NativeError+=_=>
+        host.NativeError+=reason=>
         {
-            if(disposed||quitting||nativeRecoveryPending)return;
+            if(host.IsExperimentalDesktopMaterialCandidate){materialSession.MarkFault(reason);}
+            if(disposed||quitting||nativeRecoveryPending||experimentalDesktopMaterialStopped)return;
             nativeRecoveryPending=true;
             if(!queue.TryEnqueue(()=>
             {
                 nativeRecoveryPending=false;
-                if(!disposed&&!quitting)RecoverGraphics(new System.Runtime.InteropServices.COMException("Native graphics update failed."),"native");
+                if(!disposed&&!quitting)RecoverGraphics(new System.Runtime.InteropServices.COMException(reason),"native");
             }))nativeRecoveryPending=false;
         };
-        media.SnapshotChanged+=_=>{if(seeking&&seekToken!=Media.SessionToken){seeking=false;TryScene(()=>scene.SetSeekPreview(null));}contentPolicy.Update(Media,Now);Render();UpdatePlugins();Changed?.Invoke();};
+        media.SnapshotChanged+=_=>{if(seeking&&seekToken!=Media.SessionToken){seeking=false;TryScene(()=>scene.SetSeekPreview(null));}contentPolicy.Update(Media,Now);Render();WakeMotion();UpdatePlugins();Changed?.Invoke();};
         system.ShowHideRequested+=ToggleVisibility;system.SettingsRequested+=ShowSettings;system.OpenMusicRequested+=OpenMusic;
         system.CollapseRequested+=()=>{controller.CollapseAfterOutsidePress(Now);WakeMotion();};system.ResetPositionRequested+=ResetPosition;system.QuitRequested+=Quit;
         system.DisplayChanged+=RefreshMonitors;system.Resumed+=OnResume;system.SystemSettingsChanged+=RefreshSystemSettings;
-        foreground.SceneChanged+=state=>{controller.ApplySystemScene(state,Now);if(textToneForeground!=state.ForegroundWindow){textToneForeground=state.ForegroundWindow;ScheduleTextTone();}WakeMotion();};
+        foreground.SceneChanged+=state=>{
+            if(disposed||quitting||CandidateGraphicsStopped)return;
+#if GLASSDESK_UI_PREVIEW && GLASSDESK_SYSTEM_GLASS_PREVIEW
+            if(options.QaVisualState is not null){if(controller.Visible)host.EnsureTopmost();return;}
+#endif
+            controller.ApplySystemScene(state,Now);if(controller.Visible)host.EnsureTopmost();WakeMotion();};
         // AccessibilitySettings.HighContrastChanged is unsupported in desktop apps.
         // The owned HWND receives WM_SETTINGCHANGE/WM_SYSCOLORCHANGE instead.
         effectsSubscribed=TrySubscribe(()=>uiSettings.AdvancedEffectsEnabledChanged+=OnAdvancedEffects);
         animationsSubscribed=TrySubscribe(()=>uiSettings.AnimationsEnabledChanged+=OnAnimations);
         powerSubscribed=TrySubscribe(()=>PowerManager.EnergySaverStatusChanged+=OnPower);
         InitializeWidgetBoard();
-        RefreshSystemSettings();ApplyPresentation(controller.Motion.Current);Render();host.SetVisible(true);
+        RefreshSystemSettings();ApplyPresentation(controller.Motion.Current);Render();
+        if(experimentalDesktopMaterialFailure is not null)System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(experimentalDesktopMaterialFailure).Throw();
+        host.SetVisible(true);scene.SubmitOwnedGlass();
         if(!options.UiPreview&&Preferences.HotkeyKey!=0 && !system.TrySetHotkey(Preferences.HotkeyModifiers,Preferences.HotkeyKey,out var error))notice=error;
         diagnostics.RecordEvent("app","started");
+        StartOwnedWallpaperRefresh();
     }
     public async void Start()
     {
@@ -198,7 +216,47 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
             await plugins.ApplyPreferencesAsync(Preferences);
             await plugins.UpdateSceneAsync(PluginScene());
             Render();
-            if(disposed||quitting)return;
+            if(disposed||quitting||CandidateGraphicsStopped)return;
+#if GLASSDESK_UI_PREVIEW && GLASSDESK_SYSTEM_GLASS_PREVIEW
+            if(options.QaVisualState is { } qaVisualState)
+            {
+                controller.ChangeForm(qaVisualState=="peek"?WidgetForm.Peek:WidgetForm.Details,Now);
+                WakeMotion();
+                if(disposed||quitting||CandidateGraphicsStopped)return;
+                diagnostics.RecordEvent("qa-visual-state",qaVisualState+"; synthetic media; outside click held; not input acceptance");
+                qaTransportFeedback=new(options.DataDirectory!,queue,
+                    ()=>disposed||quitting||CandidateGraphicsStopped,
+                    feedback=>{
+                        if(feedback is "next-details" or "previous-peek")
+                        {
+                            if(disposed||quitting||CandidateGraphicsStopped)return;
+                            if(options.QaSyntheticMediaMode!="playlist"||media is not QaSyntheticMediaAdapter synthetic)
+                                throw new InvalidOperationException("QA form/track transitions require the playlist synthetic-media adapter.");
+
+                            bool next=feedback=="next-details";
+                            scene.SetMonotonicTime(Now);
+                            if(disposed||quitting||CandidateGraphicsStopped)return;
+                            controller.ChangeForm(next?WidgetForm.Details:WidgetForm.Peek,Now);
+                            if(disposed||quitting||CandidateGraphicsStopped)return;
+
+                            Task<CommandResult> command=synthetic.ExecuteAsync(
+                                next?MediaCommand.Next:MediaCommand.Previous,synthetic.Current.SessionToken);
+                            if(!command.IsCompleted)
+                                throw new InvalidOperationException("QA synthetic media commands must complete synchronously.");
+                            CommandResult result=command.GetAwaiter().GetResult();
+                            if(!result.Accepted||!result.Verified)
+                                throw new InvalidOperationException(result.Error??"QA synthetic media command was not verified.");
+                            if(disposed||quitting||CandidateGraphicsStopped)return;
+                            WakeMotion();
+                            return;
+                        }
+                        scene.SetMonotonicTime(Now);
+                        scene.SetPointerFeedback(feedback=="rest"?-1:WidgetActions.Toggle,feedback=="pressed");
+                        WakeMotion();
+                    },scene.GetTransportVisualDiagnostics,
+                    error=>StopExperimentalDesktopMaterial(error,"qa-feedback"));
+            }
+#endif
             if(options.QaSnapshotRequest is { } snapshotRequest)snapshotRequests=new(host,queue,snapshotRequest);
             if(!options.NoSettings && !Preferences.OnboardingSeen)
             {
@@ -208,24 +266,29 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         catch(Exception error) {diagnostics.RecordError("start",error);notice="连接初始化失败，可以在设置中查看状态。";Render();Changed?.Invoke();}
         if(!disposed && options.QaReport is not null)
         {
-            try { qa=new(queue,controller,()=>Now,WakeMotion,options.QaReport,options.QaCycles,scene.GetTypographyDiagnostics,()=>new {Body=readability,ClockPlate=clockReadability});qa.RecordContent(contentPolicy.Mode,contentPolicy.ForForm(controller.Form),Media.State,controller.Form,controller.Visible); }
+            try { qa=new(queue,controller,()=>Now,WakeMotion,options.QaReport,options.QaCycles,scene.GetTypographyDiagnostics,()=>new {Body=readability,ClockPlate=clockReadability},options.IncidentHostShortTest,()=>new {Backend=materialSession.Backend.ToString(),Status=host.LiquidGlassStatus,Host=host.Context,OwnedImageSourceLoaded=host.OwnedImageAvailable,OwnedImagePresented=host.OwnedImagePresented,SystemLensSelected=host.IsLiquidGlassCapture,RuntimePixelAcquisition=false,Tripped=materialSession.IsExperimentTripped});qa.RecordContent(contentPolicy.Mode,contentPolicy.ForForm(controller.Form),Media.State,controller.Form,controller.Visible); }
             catch(Exception error) { diagnostics.RecordError("qa-start",error); }
         }
     }
-    void WakeMotion(){if(disposed||quitting)return;if(controller.NeedsTick||scene.SceneMotionActive){companionIdleTimer.Stop();if(!motionTimer.IsRunning)motionTimer.Start();}else ScheduleCompanionIdle();}
+    void WakeMotion(){if(disposed||quitting||CandidateGraphicsStopped)return;if(controller.NeedsTick||scene.SceneMotionActive){companionIdleTimer.Stop();if(!motionTimer.IsRunning)motionTimer.Start();}else ScheduleCompanionIdle();}
     void ScheduleCompanionIdle()
     {
         companionIdleTimer.Stop();
+        if(disposed||quitting||CandidateGraphicsStopped)return;
         if(controller.Visible&&scene.NextCompanionWake is double wake){companionIdleTimer.Interval=TimeSpan.FromMilliseconds(Math.Max(1,wake-Now));companionIdleTimer.Start();}
     }
     void UpdateOutsideGeometry()
     {
-        if(disposed||quitting||controller.Form!=WidgetForm.Details||!controller.Visible){outside.Update(null);return;}
+        if(disposed||quitting||CandidateGraphicsStopped||controller.Form!=WidgetForm.Details||!controller.Visible){CloseHomeNavigationWindow();outside.Update(null);return;}
+        homeNavigation?.RepositionNearOwner();
         var context=host.Context;float scale=context.Dpi/96f;
-        outside.Update(new(openSequence,++geometryVersion,new(context.X,context.Y,context.Width*scale,context.Height*scale),controller.Motion.Current.Radius*scale,scene.CaptureOwner,OwnedWidgetRegions()));
+        outside.Update(new(openSequence,++geometryVersion,new(context.X,context.Y,context.Width*scale,context.Height*scale),
+            controller.Motion.Current.Radius*scale,scene.CaptureOwner,OwnedWidgetRegions(),
+            homeNavigation?.ScreenBounds,homeNavigation?.ScreenCornerRadius??0));
     }
     public void PreviewCompanionAppearance(uint color,string appearanceId)
     {
+        if(disposed||quitting||CandidateGraphicsStopped)return;
         scene.SetMonotonicTime(Now);
         appearancePreview=Preferences with {CompanionColor=color|0xff000000,CompanionAppearanceId=CompanionAppearanceIds.Normalize(appearanceId)};
         plugins.PreviewBuiltinAppearance(color,appearanceId);
@@ -245,32 +308,43 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     }
     void ApplyPresentation(WidgetPose pose)
     {
-        if(disposed||applyingHost)return;
+        if(disposed||applyingHost||CandidateGraphicsStopped||!EnsureExperimentalBodyFits())return;
         applyingHost=true;
         try
         {
-            host.ApplyFrame(new(pose.Width,pose.Height,pose.Radius,Preferences.Blur,Preferences.TintOpacity,solid));
-            host.SetPlacement((int)Math.Round(pose.X),(int)Math.Round(pose.Y));
-            scene.ApplyPresentation(pose);UpdateOutsideGeometry();
-            if(textToneContext!=host.Context){textToneContext=host.Context;ScheduleTextTone();}
+            scene.SetSolidMaterial(solid);
+            var frame=new HostFrame(pose.Width,pose.Height,pose.Radius,Preferences.Blur,Preferences.TintOpacity,solid){SurfaceTension=EffectivePreferences.ReducedMotion?0:pose.SurfaceTension};
+            int screenX=checked((int)Math.Round(pose.X)),screenY=checked((int)Math.Round(pose.Y));
+            if(host.IsExperimentalDesktopMaterialCandidate)
+                host.ApplyPositionedFrame(frame,screenX,screenY);
+            else
+            {
+                host.ApplyFrame(frame);
+                if(CandidateGraphicsStopped)return;
+                host.SetPlacement(screenX,screenY);
+            }
+            if(CandidateGraphicsStopped)return;
+            scene.SetMonotonicTime(Now);scene.ApplyPresentation(pose);scene.SubmitOwnedGlass();UpdateOutsideGeometry();
+            CheckOwnedWallpaperMonitor();
         }
-        catch(Exception error){diagnostics.RecordError("graphics",error);notice="图形暂时不可用，正在使用简化显示。";solid=true;}
+        catch(Exception error){if(host.IsExperimentalDesktopMaterialCandidate)StopExperimentalDesktopMaterial(error,"presentation");else{diagnostics.RecordError("graphics",error);notice="图形暂时不可用，正在使用简化显示。";solid=true;}}
         finally{applyingHost=false;}
     }
-    void ScheduleTextTone()
+    bool ApplySceneInk()
     {
-        if(disposed||quitting||!controller.Visible)return;
-        textToneTimer.Stop();textToneTimer.Start();
+        bool lightInk=!solid&&Preferences.TextInk==WidgetTextInk.White;
+        const string reason="Manual text color; composed contrast not measured.";
+        readability=new(lightInk,false,true,0,reason);clockReadability=readability;
+        return !CandidateGraphicsStopped&&scene.SetTextTone(lightInk,false,lightInk,false);
     }
-    bool ApplySceneInk()=>scene.SetTextTone(!solid&&lightText,!solid&&readability.PromoteSecondary,
-        !solid&&clockReadability.LightInk,!solid&&clockReadability.PromoteSecondary);
     void Render()
     {
-        if(disposed||quitting)return;
+        if(disposed||quitting||CandidateGraphicsStopped)return;
         try
         {
             contentPolicy.Tick(Now);
             scene.SetMonotonicTime(Now);
+            scene.SetSolidMaterial(solid);
             ApplySceneInk();
             PrepareWidgetBoard();
             // Preview-only acceptance hook: shrink the real Details window so the responsive
@@ -280,14 +354,12 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
                 && pages.CurrentPageId==DetailsPageController.Music)
                 controller.SetDetailsPageHeight(previewDetailsHeight,Now);
             controller.UpdateContent(contentPolicy.Mode,Media.Connected,Preferences.CompanionEnabled,scene.MeasureMusicCapsuleWidth(Media,Preferences),Now,Media.Timeline?.Valid==true);
-            var material=(controller.Form,Media.Connected,Preferences.TintOpacity,Preferences.LiquidGlassEnabled,
-                Preferences.ClockShowTime,Preferences.ClockShowDate,Preferences.ClockShowWeekday);
-            if(readabilityMaterial!=material)
-            {readabilityMaterial=material;ScheduleTextTone();}
+            if(CandidateGraphicsStopped||!EnsureExperimentalBodyFits())return;
             float viewportHeight=Math.Min(controller.Layout.Height,controller.Monitor.WorkArea.Height/controller.Monitor.Scale);
             if(options.QaDetailsHeight is float qaHeight)viewportHeight=Math.Min(viewportHeight,qaHeight);
             scene.SetDetailsViewport(viewportHeight,Math.Min(360,controller.Monitor.WorkArea.Width/controller.Monitor.Scale));
             scene.Render(controller.Form,Media,DateTimeOffset.Now,EffectivePreferences,pageSaveNotice??notice,contentPolicy.Mode);
+            scene.SubmitOwnedGlass();
             ReconcileWidgetBoard();
             qa?.RecordContent(contentPolicy.Mode,contentPolicy.ForForm(controller.Form),Media.State,controller.Form,controller.Visible);
             WakeMotion();
@@ -302,12 +374,13 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     }
     bool TryScene(Action action)
     {
-        if(disposed)return false;
+        if(disposed||CandidateGraphicsStopped)return false;
         try{action();return true;}
         catch(Exception error){RecoverGraphics(error,"graphics-update");return false;}
     }
     void RecoverGraphics(Exception error,string component)
     {
+        if(host.IsExperimentalDesktopMaterialCandidate){StopExperimentalDesktopMaterial(error,component);return;}
         diagnostics.RecordError(component,error);notice="图形暂时不可用，已切换简化材质并尝试恢复。";solid=true;
         timelineTimer.Stop();clockTimer.Stop();cursorTimer.Stop();
         ApplyPresentation(controller.Motion.Sample(Now));
@@ -316,8 +389,9 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     }
     void UpdateContentTimers()
     {
+        if(disposed||quitting||CandidateGraphicsStopped)return;
         bool reconcileMedia=!disposed&&!quitting&&controller.Visible&&Media.Connected;
-        if(reconcileMedia&&!mediaStateTimer.IsRunning){mediaStateTimer.Start();media.RefreshPlaybackState();}
+        if(reconcileMedia&&!mediaStateTimer.IsRunning){mediaStateTimer.Start();RefreshMediaPlaybackState();}
         else if(!reconcileMedia)mediaStateTimer.Stop();
         bool clock=controller.Visible&&(controller.Form==WidgetForm.Peek||controller.Form==WidgetForm.Capsule&&contentPolicy.ForForm(controller.Form)==CapsuleContentMode.Clock);
         clockTimer.Stop();
@@ -344,7 +418,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     }
     void UpdateCursorGaze()
     {
-        if(disposed||quitting)return;
+        if(disposed||quitting||CandidateGraphicsStopped)return;
         if(CursorPositionSource.TryGetRelativePosition(host.Context,out var x,out var y))
             TryScene(()=>scene.SetCompanionPointerGaze(x,y));
         else TryScene(()=>scene.ClearCompanionPointerGaze());
@@ -354,8 +428,14 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         if(disposed||quitting)return;
         // Lifecycle requests belong to the host, before any page consumes pointer input.
         if(e.Kind==HostEventKind.Quit){Quit();return;}
+        if(CandidateGraphicsStopped)return;
         if(e.Kind==HostEventKind.OpenSettings){ShowSettings();return;}
-        int id=e.Kind is HostEventKind.Invoke or HostEventKind.RangeValue?e.ControlId:scene.HitTest(e.X,e.Y);
+        bool positionedPointer=e.Kind is HostEventKind.Enter or HostEventKind.Move or HostEventKind.Leave
+            or HostEventKind.Down or HostEventKind.Up or HostEventKind.Wheel;
+        bool outsideSurface=positionedPointer&&e.ControlId==int.MinValue;
+        int id=e.Kind is HostEventKind.Invoke or HostEventKind.RangeValue
+            ?e.ControlId
+            :outsideSurface?-1:scene.HitTest(e.X,e.Y);
         if(e.Kind is HostEventKind.Enter or HostEventKind.Move or HostEventKind.Leave or HostEventKind.CaptureLost)
             TryScene(()=>scene.UpdateCompanionGaze(e));
         if(e.Kind==HostEventKind.Enter)CompanionReact(CompanionInteraction.Attention);
@@ -363,6 +443,9 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         else if(e.Kind==HostEventKind.Up)CompanionReact(CompanionInteraction.Release);
         else if(e.Kind==HostEventKind.CaptureLost)CompanionReact(CompanionInteraction.None);
         qa?.RecordPointer(e,id,host.Context);
+        // A wheel can be delivered while the HWND retains mouse capture. It
+        // remains observable to QA, but must not scroll through a clipped edge.
+        if(outsideSurface&&e.Kind==HostEventKind.Wheel)return;
         if(controller.Form==WidgetForm.Details&&(id==WidgetActions.HomeBack||homeBackPressed))
         {
             if(e.Kind is HostEventKind.Enter or HostEventKind.Move)
@@ -428,11 +511,6 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         else if(e.Kind==HostEventKind.Move)
         {
             if(seeking)TryScene(()=>scene.SetSeekPreview(scene.SeekPositionFor(e.X)));else TryScene(()=>scene.SetPointerFeedback(id,pointerDown&&pressedAction==id));
-            if(controller.IsDragging)
-            {
-                var pointerMonitor=monitors.FirstOrDefault(m=>e.ScreenX>=m.Bounds.X&&e.ScreenX<m.Bounds.Right&&e.ScreenY>=m.Bounds.Y&&e.ScreenY<m.Bounds.Bottom);
-                if(pointerMonitor is not null && pointerMonitor.Id!=controller.Monitor.Id)controller.SetMonitor(pointerMonitor,Now);
-            }
         }
         else if(e.Kind==HostEventKind.Up)
         {
@@ -442,9 +520,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         }
         else if(e.Kind is HostEventKind.Leave or HostEventKind.CaptureLost)
         {TryScene(()=>scene.SetPointerFeedback(-1,false));if(e.Kind==HostEventKind.CaptureLost){pointerDown=false;pressedAction=-1;seeking=false;TryScene(()=>scene.SetSeekPreview(null));}}
-        bool wasDragging=controller.IsDragging;
         controller.HandlePointer(e,id,Now);
-        if(!wasDragging&&controller.IsDragging)CompanionReact(CompanionInteraction.Drag);
         WakeMotion();
     }
     async void SubmitSeek(TimeSpan? position,string token)
@@ -476,7 +552,8 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         if(id==WidgetActions.Settings||id==WidgetActions.PluginTools){ShowSettings();if(id==WidgetActions.PluginTools)settings?.ShowPlugins();return;}
         MediaCommand? command=id switch {WidgetActions.Previous=>MediaCommand.Previous,WidgetActions.Toggle=>MediaCommand.TogglePlayPause,WidgetActions.Next=>MediaCommand.Next,_=>null};
         if(command is null)return;
-        TryScene(()=>scene.AnimateTransportActivation(id));
+        TryScene(()=>{scene.SetMonotonicTime(Now);scene.AnimateTransportActivation(id);});
+        WakeMotion();
         if(id is WidgetActions.Previous or WidgetActions.Next)TryScene(()=>scene.PrepareTrackTransition(id));
         try
         {
@@ -493,13 +570,14 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     }
     void RefreshMonitors()
     {
-        if(disposed)return;
+        if(disposed||CandidateGraphicsStopped)return;
         monitors=monitorService.GetMonitors();
-        var current=monitors.FirstOrDefault(m=>m.Id==controller.Monitor.Id);
-        if(current is null)controller.SetMonitor(monitors.First(m=>m.Primary),Now,true);else controller.SetMonitor(current,Now);
+        controller.SetMonitor(monitors.First(m=>m.Primary),Now,true);
         Render();WakeMotion();foreground.Refresh();
     }
-    void OnResume(){if(disposed)return;widgetScheduler.Invalidate(DateTimeOffset.UtcNow);Render();RefreshMonitors();media.Refresh();ScheduleTextTone();}
+    void RefreshMediaPlaybackState(){if(media is NetEaseMediaAdapter actual)actual.RefreshPlaybackState();}
+    void RefreshMedia(){if(media is NetEaseMediaAdapter actual)actual.Refresh();}
+    void OnResume(){if(disposed||CandidateGraphicsStopped)return;widgetScheduler.Invalidate(DateTimeOffset.UtcNow);Render();RefreshMonitors();if(controller.Visible)host.EnsureTopmost();RefreshMedia();}
     bool TrySubscribe(Action subscribe)
     {
         try{subscribe();return true;}
@@ -510,19 +588,12 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     void OnPower(object? sender,object args)=>dispatcher.TryEnqueue(RefreshSystemSettings);
     void RefreshSystemSettings()
     {
+        if(CandidateGraphicsStopped)return;
         if(disposed)return;
         var environment=SystemIntegration.ReadMaterialEnvironment();
         widgetScheduler.Invalidate(DateTimeOffset.UtcNow);
         solid=environment.UseSolid||!uiSettings.AdvancedEffectsEnabled;
         controller.UpdatePreferences(EffectivePreferences,Now);ApplyPresentation(controller.Motion.Sample(Now));Render();WakeMotion();
-        ScheduleTextTone();
-    }
-    async void OnPlacementCommitted(WidgetAnchor anchor,MonitorDescriptor monitor)
-    {
-        if(quitting||disposed)return;
-        Preferences=Preferences with {MonitorId=monitor.Id,AnchorX=(anchor.CenterX-monitor.WorkArea.X)/Math.Max(1,monitor.WorkArea.Width),AnchorY=(anchor.TopY-monitor.WorkArea.Y)/monitor.Scale};
-        try{await SaveCurrentPageAsync();}catch(Exception error){diagnostics.RecordError("placement-save",error);}
-        Changed?.Invoke();
     }
     public async Task<SettingsUpdateResult> UpdatePreferencesAsync(WidgetPreferences value)
     {
@@ -568,6 +639,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         }
     }
     public void ResetPosition(){controller.ResetPosition(monitors.First(m=>m.Primary),Now);WakeMotion();}
+    public void ResetLiquidGlassCapture(){try{host.ResetLiquidGlassCapture();}catch{/* Fuse reset is best-effort; frosted fallback stays active. */}}
     public void ToggleVisibility(){controller.ToggleVisibility(Now);WakeMotion();}
     public void OpenMusic(){if(!system.OpenNetEase(out var error)){notice=error;Render();Changed?.Invoke();}}
     public async Task RetryMediaAsync()
@@ -576,7 +648,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         notice=null;
         await media.StartAsync();
         if(disposed||quitting)return;
-        media.Refresh();Render();Changed?.Invoke();
+        RefreshMedia();Render();Changed?.Invoke();
     }
     public async Task<string> ExportDiagnosticsAsync()
     {
@@ -604,7 +676,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         if(quitting||disposed)return;quitting=true;
         try
         {
-            CommitBoardOnLeave();widgetTimer.Stop();pageSaveTimer.Stop();StopRuntimeTimers();outside.Update(null);
+            CloseHomeNavigationWindow();CommitBoardOnLeave();widgetTimer.Stop();pageSaveTimer.Stop();StopRuntimeTimers();outside.Update(null);
             bool saved=true;
             if(settings is not null){settings.Hide();await settings.FlushPendingAsync();saved=!settings.LastSaveFailed;}
             await preferenceGate.WaitAsync();
@@ -619,7 +691,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
             if(!saved&&options.QaReport is null&&!FailureReporter.ConfirmExitWithoutSaving())
             {
                 quitting=false;notice="配置尚未保存，请检查数据目录后重试。";
-                ShowSettings();Render();UpdateOutsideGeometry();ScheduleTextTone();WakeMotion();
+                ShowSettings();Render();UpdateOutsideGeometry();WakeMotion();
                 if(pages.SavePending){pageSaveTimer.Stop();pageSaveTimer.Start();}
                 UpdatePlugins();Changed?.Invoke();return;
             }
@@ -647,12 +719,17 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
     void StopRuntimeTimers()
     {
         motionTimer.Stop();clockTimer.Stop();timelineTimer.Stop();graphicsRetryTimer.Stop();pauseTimer.Stop();
-        materialSnapshotTimer.Stop();cursorTimer.Stop();textToneTimer.Stop();companionIdleTimer.Stop();mediaStateTimer.Stop();
+        materialSnapshotTimer.Stop();cursorTimer.Stop();companionIdleTimer.Stop();mediaStateTimer.Stop();
+#if GLASSDESK_UI_PREVIEW && GLASSDESK_SYSTEM_GLASS_PREVIEW
+        qaTransportFeedback?.Dispose();
+#endif
     }
     public void Dispose()
     {
         if(disposed)return;disposed=true;StopRuntimeTimers();outside.Update(null);
-        void Clean(Action cleanup){try{cleanup();}catch(Exception error){diagnostics.RecordError("dispose",error);}}
+        StopOwnedWallpaperRefresh();
+        void Clean(Action cleanup){try{cleanup();}catch(Exception error){diagnostics.RecordError("dispose",error);materialSession.MarkFault($"dispose failed: 0x{error.HResult:X8}");}}
+        Clean(DisposeHomeNavigationWindow);
         Clean(DisposeWidgetBoard);
         Clean(()=>qa?.Dispose());Clean(()=>snapshotRequests?.Dispose());
         if(effectsSubscribed)uiSettings.AdvancedEffectsEnabledChanged-=OnAdvancedEffects;
@@ -660,5 +737,6 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         if(powerSubscribed)PowerManager.EnergySaverStatusChanged-=OnPower;
         Clean(outside.Dispose);Clean(audio.Dispose);Clean(()=>settings?.Dispose());Clean(foreground.Dispose);
         Clean(media.Dispose);Clean(system.Dispose);Clean(scene.Dispose);Clean(host.Dispose);Clean(store.Dispose);Clean(preferenceGate.Dispose);
+        if(!CandidateGraphicsStopped)materialSession.TryCompleteCleanExit();
     }
 }

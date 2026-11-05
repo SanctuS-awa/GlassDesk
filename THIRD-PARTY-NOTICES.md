@@ -1,6 +1,6 @@
-# Third-party components for GlassDesk 0.1.0
+# Third-party components for GlassDesk 0.2.1.1 beta
 
-This inventory was captured on 2026-10-12 from the restored official NuGet packages, the installed Windows SDK, the Inno Setup distribution and the actual x64 build dependency manifest. Version 0.1.0 retains these locked runtime and installer dependencies. Original license and notice files are preserved under [licenses](licenses/manifest.json), with source identifiers and SHA-256 hashes for the collected texts and package metadata. The license texts govern their respective components; GlassDesk's original source is separately covered by LICENSE.
+This inventory originates from the 2026-10-12 dependency review and is retained as a baseline for 0.2.1.1 beta. The locked runtime versions should be reviewed against the new build before publication. Original license and notice files are preserved under [licenses](licenses/manifest.json), with source identifiers and SHA-256 hashes for the collected texts and package metadata. The license texts govern their respective components; GlassDesk's original source is separately covered by LICENSE.
 
 GlassDesk's layout, icons and placeholder artwork were created for this project. Other workspace projects, MyDockFinder binaries, fonts, pictures, themes and song artwork are not part of the distributable.
 
@@ -29,7 +29,7 @@ Windows App SDK **binary NuGet packages use Microsoft Software License Terms**, 
 | C#/WinRT `WinRT.Runtime.dll` supplied by the SDK projection pack | File version 2.2.0.48161 | MIT; [original license](licenses/CsWinRT-2.2.0.48161/LICENSE) from the [matching official source commit](https://raw.githubusercontent.com/microsoft/CsWinRT/8649ee3eeb2445ca2a36d80d878ef60b96a6c65d/LICENSE) |
 | C++/WinRT generated interop support | Windows SDK 10.0.26100.0 | MIT; [original SDK header license](licenses/CppWinRT-10.0.26100.0/LICENSE.txt) |
 | Visual C++ runtime code linked into the native bridge with `/MT` | MSVC 14.51.36231 / Visual Studio 2026 | [Visual C++ runtime terms, original DOCX](licenses/VisualCppRuntime-2026/LICENSE.docx) and [text extraction](licenses/VisualCppRuntime-2026/LICENSE.txt); redistribution rights are governed by the developer's [Visual Studio license](licenses/VisualStudioCommunity-2026/LICENSE.docx) and [official redistribution list](https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution) |
-| Inno Setup installer/uninstaller runtime | 7.1.0 | [Original Inno Setup license](licenses/InnoSetup-7.1.0/license.txt); [official license](https://jrsoftware.org/files/is/license.txt) |
+| Inno Setup installer/uninstaller runtime | 7.1.1 | [Original Inno Setup license](licenses/InnoSetup-7.1.0/license.txt), verified identical to the 7.1.1 license text; [official license](https://jrsoftware.org/files/is/license.txt) |
 
 The Windows App SDK's transitive Windows ML/ONNX, WebView2 SDK and Tensors binaries appear in the self-contained output. Their presence does not mean GlassDesk offers machine learning or browser features. WebView2 SDK attribution does not assert that a WebView2 browser runtime is bundled. Nested component copyright notices, including those for dependencies inside Microsoft binaries, are retained in the complete supplied `NOTICE` / `THIRD-PARTY-NOTICES` files.
 
@@ -50,7 +50,7 @@ The independent companion contour/motion, Windows GPU material, and transport tr
 | [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools/10.0.26100.4654) | 10.0.26100.4654 | [Original nuspec with SDK license URL](licenses/Microsoft.Windows.SDK.BuildTools-10.0.26100.4654/microsoft.windows.sdk.buildtools.nuspec); [Microsoft SDK license endpoint](https://aka.ms/WinSDKLicenseURL) |
 | [Microsoft.Windows.SDK.BuildTools.MSIX](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools.MSIX/1.7.251221100) | 1.7.251221100 | [Original SDK license](licenses/Microsoft.Windows.SDK.BuildTools.MSIX-1.7.251221100/sdk_license.txt), [notices](licenses/Microsoft.Windows.SDK.BuildTools.MSIX-1.7.251221100/NOTICE.txt) |
 | Visual Studio Community 2026 / MSVC x64 | MSVC 14.51.36231 | [Original Microsoft license DOCX](licenses/VisualStudioCommunity-2026/LICENSE.docx), [text extraction](licenses/VisualStudioCommunity-2026/LICENSE.txt), [official license page](https://visualstudio.microsoft.com/license-terms/vs2026-ga-community/) |
-| Inno Setup compiler | 7.1.0 x64 | Same Inno license above; the compiler itself is not installed with GlassDesk |
+| Inno Setup compiler | 7.1.1 x64 | Same Inno license above (the 7.1.1 license text matches the retained 7.1.0 text); the compiler itself is not installed with GlassDesk |
 
 Build tool binaries are excluded from the application payload. The SDK terms and compiler terms remain in this source/notice bundle for provenance. Eligibility to use Visual Studio Community is governed by its own individual and organizational rules; this bundle does not extend those rights. Visual C++ runtime end-user terms do not, by themselves, grant a developer redistribution permission.
 

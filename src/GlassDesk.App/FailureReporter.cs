@@ -8,6 +8,10 @@ internal static class FailureReporter
     public static string? Write(string directory,string name,Exception error,bool preview)
     {
         string value=$"{DateTimeOffset.UtcNow:O}\n{error.GetType().FullName}\nHRESULT=0x{error.HResult:X8}\n{error.StackTrace}\n";
+        // Whitelisted numerical diagnostic only. Do not dump arbitrary exception
+        // messages/data that could contain private player or file information.
+        if(error.Data["LiquidGlassCaptureStage"] is uint inkStage)value+=$"LiquidGlassCaptureStage={inkStage}\n";
+        if(error.Data["LiquidGlassCaptureStageHResult"] is uint inkStageHr)value+=$"LiquidGlassCaptureStageHResult=0x{inkStageHr:X8}\n";
         string fallback=preview?LaunchOptions.PreviewErrorFallback:Path.Combine(Path.GetTempPath(),"GlassDesk","errors");
         foreach(string target in new[]{directory,fallback}.Distinct(StringComparer.OrdinalIgnoreCase))
         {

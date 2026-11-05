@@ -19,6 +19,7 @@ public sealed partial class WidgetScene : IDisposable
     readonly Dictionary<WidgetForm, CrossfadeSurfaceVisual> _metadata = new();
     readonly Dictionary<WidgetForm, (string Title, string Artist, float Width, uint Text, uint Secondary,
         TypographyIdentity Typography, float OffsetX, float OffsetY, float ArtistOffset)> _metadataKeys = new();
+    readonly Dictionary<WidgetForm, SurfaceOp[]> _metadataOperations = new();
     readonly Dictionary<string, SurfaceOp[]> _typographyLayers = new(StringComparer.Ordinal);
     public bool CaptureTypographyDiagnostics { get; set; }
     readonly SpriteVisual _content;
@@ -50,7 +51,7 @@ public sealed partial class WidgetScene : IDisposable
     // pressed destination action. Release only activates when the action still matches.
     int _dockPressedAction = -1;
     public double? NextCompanionWake => _form == WidgetForm.Capsule ? _placement.NextWakeTime : null;
-    public bool SceneMotionActive => _chrome.NeedsTick || CompanionMotionActive;
+    public bool SceneMotionActive => _chrome.NeedsTick || CompanionMotionActive || _ownedControlMoving || ReadingSupportMotionActive;
     public PointerCaptureOwner CaptureOwner => _captureOwner;
     readonly ContainerVisual _peekButtons;
     readonly ContainerVisual _detailsButtons;
@@ -427,6 +428,7 @@ public sealed partial class WidgetScene : IDisposable
             _placementKey = null;
             ConfigurePlacement();
             UpdateAuxiliaryPlacement();
+            UpdateReadingSupport();
             return true;
         }
         catch { InvalidateDrawingCaches(); throw; }
@@ -437,6 +439,7 @@ public sealed partial class WidgetScene : IDisposable
     {
         EnsureUiThread();
         if (_disposed) return;
+        BeginSystemTransportPresentation();
         try { RenderCore(form, media, now, preferences, notice, capsuleMode); }
         catch { InvalidateDrawingCaches(); throw; }
     }
@@ -449,6 +452,7 @@ public sealed partial class WidgetScene : IDisposable
         _form = form;
         _media = media;
         _now = now;
+        if (_preferences.LiquidGlassEnabled != preferences.LiquidGlassEnabled) _drawingInvalidated = true;
         _preferences = preferences;
         _capsuleMode = capsuleMode ?? (media.Connected ? CapsuleContentMode.Music : CapsuleContentMode.Clock);
         MeasureMusicCapsuleWidth(media, preferences);
@@ -508,7 +512,7 @@ public sealed partial class WidgetScene : IDisposable
             var surface = RenderTextLayer(form.ToString(), size.X, size.Y, operations);
             switch (form)
             {
-                case WidgetForm.Capsule: ReplaceSurface(ref _capsuleSurface, _capsuleBrush, surface); break;
+                case WidgetForm.Capsule: _capsuleClockInk?.Dispose();ReplaceSurface(ref _capsuleSurface, _capsuleBrush, surface); break;
                 case WidgetForm.Peek: ReplaceSurface(ref _peekSurface, _peekBrush, surface); break;
                 default: ReplaceSurface(ref _contentSurface, _contentBrush, surface); break;
             }
@@ -575,6 +579,7 @@ public sealed partial class WidgetScene : IDisposable
                 {
                     DrawCapsule(operations);
                     var size = LayoutSize(form); _capsuleContent.Size = size;
+                    _capsuleClockInk?.Dispose();
                     ReplaceSurface(ref _capsuleSurface, _capsuleBrush, RenderTextLayer("Capsule", size.X, size.Y, operations));
                 }
                 else if (form == WidgetForm.Peek)
@@ -749,8 +754,11 @@ public sealed partial class WidgetScene : IDisposable
         _timeline.Offset = new(
             timelineLayout?.Timeline.X ?? (pose.Width - 360) / 2 + 56,
             timelineLayout?.Timeline.Y ?? 300, 0);
-        _chrome.SetDockVisible(!HomePage);
+        // Home uses its own Dock. The legacy five-slot chrome dock contains routes and
+        // previews for removed pages, so keep those controls hidden in every Details page.
+        _chrome.SetDockVisible(false);
         UpdateAuxiliaryPlacement();
+        BeginSystemTransportPresentation();
         BuildControls();
         var feedbackControl = _controls.FirstOrDefault(control => control.Id == _feedbackId);
         if (feedbackControl is not null) _feedback.Offset = new(feedbackControl.X, feedbackControl.Y, 0);
@@ -850,8 +858,29 @@ public sealed partial class WidgetScene : IDisposable
         bool reduced = _preferences.ReducedMotion || !_uiSettings.AnimationsEnabled;
         uint face = _accessibility.HighContrast ? _button : _companionState?.Color ?? _preferences.CompanionColor;
         uint eyes = _accessibility.HighContrast ? _text : FaceInk(face);
-        _peekCompanion.Present((_presentedSize.X - (_media.Connected ? 320 : 240)) / 2 + (_media.Connected ? PeekClockX - 66 : 91),
-            _media.Connected && ClockSecondary.Length > 0 ? 16 : 14, CompanionVisible ? _contentWeights.Y : 0, face, eyes, reduced);
+        bool musicPeekWithCompanion = _media.Connected && CompanionVisible && _contentWeights.Y > .001f;
+        float peekFaceOpticalOffset = 0;
+        if (musicPeekWithCompanion)
+        {
+            EnsureClockReadingMeasurements();
+            if (ClockPrimary.Length > 0 || ClockSecondary.Length > 0)
+            {
+                // The reading field includes 4 DIP of support padding. Center the
+                // fixed 58-DIP face + 8-DIP gap + visible ink group in the unchanged slot.
+                float inkAdvance = Math.Clamp(_peekClockReadingWidth - 4, 0, PeekClockWidth);
+                peekFaceOpticalOffset = (PeekClockWidth - inkAdvance) / 2;
+            }
+            else
+            {
+                // With every clock field disabled, the face is the complete
+                // header. An empty time slot must not leave it stranded left.
+                peekFaceOpticalOffset = (320 - 58) / 2f - (PeekClockX - 66);
+            }
+        }
+        var headerParallax=OwnedHeaderParallax(true);
+        _peekCompanion.Present((_presentedSize.X - (_media.Connected ? 320 : 240)) / 2 +
+            (_media.Connected ? PeekClockX - 66 + peekFaceOpticalOffset : 91) + headerParallax.X,
+            (_media.Connected && ClockSecondary.Length > 0 ? 16 : 14)+headerParallax.Y, CompanionVisible ? _contentWeights.Y : 0, face, eyes, reduced);
         _peekCompanion.Gaze(_gazePointer.X, _gazePointer.Y, _gazeInside && _preferences.CompanionFollowMouse);
         _chrome.SetHomeGaze(_gazePointer.X, _gazePointer.Y, _gazeInside && _preferences.CompanionFollowMouse);
         if(!CompanionVisible || _form!=WidgetForm.Capsule){_companion.Visual.Opacity=0;return;}
@@ -1179,6 +1208,9 @@ public sealed partial class WidgetScene : IDisposable
         EnsureUiThread();
         if (!_controls.Any(control => control.Id == actionId && control.Enabled)) return;
         var form = _controlForms.GetValueOrDefault(actionId, _form);
+        if(OwnedGlassEnabled&&actionId is >=WidgetActions.Previous and <=WidgetActions.Next){
+            _ownedControlPulseUntil[actionId-WidgetActions.Previous]=_motionNow+110;_ownedControlMoving=true;
+        }
         if (_buttons.TryGetValue((form, actionId), out var button)) button.Activate(_preferences.ReducedMotion);
     }
 
@@ -1201,6 +1233,7 @@ public sealed partial class WidgetScene : IDisposable
             bool hovered = button.Key.Form == _controlForms.GetValueOrDefault(actionId, _form) && button.Key.Action == actionId;
             button.Value.SetFeedback(hovered, hovered && pressed, _preferences.ReducedMotion);
         }
+        if(_host.IsExperimentalDesktopMaterialCandidate){_ownedControlMoving=true;SubmitOwnedGlass();}
         var control = _controls.FirstOrDefault(c => c.Id == actionId && c.Id != WidgetActions.Body && c.Id != WidgetActions.Seek && c.Enabled);
         if (control is null || actionId is WidgetActions.Previous or WidgetActions.Toggle or WidgetActions.Next)
         {
@@ -1256,12 +1289,15 @@ public sealed partial class WidgetScene : IDisposable
     {
         if (_media.Connected)
         {
+            _disconnectedPeekText = null;
             // Face + clock share only the shell material: no nested header or clock plate.
             float clockX = PeekClockX, clockWidth = PeekClockWidth;
             bool secondary = ClockSecondary.Length > 0;
+            if(!_host.IsExperimentalDesktopMaterialCandidate){
             Text(operations, ClockPrimary, clockX, secondary ? 10 : 15, clockWidth, 26, TextRole.ClockWhiteplate, InkRole.Primary, center: true,
                 flags: _preferences.ClockShowTime ? TextFlags.TabularNumbers : TextFlags.TabularDigitsOnly, clockPlate: true);
             if (secondary) Text(operations, ClockSecondary, clockX, 36, clockWidth, 12, TextRole.ClockLegacyAux, InkRole.Secondary, center: true, clockPlate: true);
+            }
             Transport(86, PeekTransportY, 44, WidgetActions.Previous, _media.Capabilities.Previous);
             Transport(138, PeekTransportY, 44, WidgetActions.Toggle, _media.Capabilities.Toggle);
             Transport(190, PeekTransportY, 44, WidgetActions.Next, _media.Capabilities.Next);
@@ -1269,11 +1305,19 @@ public sealed partial class WidgetScene : IDisposable
         else
         {
             ClockWhiteplate(operations,20,52,200,ClockSecondary.Length > 0 ? 58 : 44,18);
-            Text(operations, ClockPrimary, 24, 54, 192, 40,
+            var clockOperations = new List<SurfaceOp>();
+            bool ownedReading = OwnedGlassEnabled;
+            Text(clockOperations, ClockPrimary, 24, 54, 192, 40,
                 _preferences.ClockShowTime ? TextRole.ClockPeekHero : TextRole.PageTitle, InkRole.Primary, center: true,
-                flags: _preferences.ClockShowTime ? TextFlags.TabularNumbers : TextFlags.TabularDigitsOnly, clockPlate: true);
-            if (ClockSecondary.Length > 0) Text(operations, ClockSecondary, 24, 91, 192, 18, TextRole.Caption, InkRole.Secondary, center: true, clockPlate: true);
-            Text(operations, "打开网易云音乐", 62, 115, 116, 20, TextRole.Caption, InkRole.Secondary, center: true);
+                flags: _preferences.ClockShowTime ? TextFlags.TabularNumbers : TextFlags.TabularDigitsOnly, clockPlate: !ownedReading);
+            if (ClockSecondary.Length > 0) Text(clockOperations, ClockSecondary, 24, 91, 192, 18, TextRole.Caption,
+                ownedReading ? InkRole.Primary : InkRole.Secondary, center: true, clockPlate: !ownedReading);
+            Text(clockOperations, "打开网易云音乐", 62, 115, 116, 20, TextRole.Caption,
+                ownedReading ? InkRole.Primary : InkRole.Secondary, center: true);
+            // Retain the actual outgoing form's text, not the next global media state.
+            _disconnectedPeekText = clockOperations.Where(op => !string.IsNullOrEmpty(op.Text)).ToArray();
+            _disconnectedPeekLargeClock = _preferences.ClockShowTime && ClockSecondary.Length == 0;
+            operations.AddRange(clockOperations);
         }
     }
 
@@ -1289,6 +1333,12 @@ public sealed partial class WidgetScene : IDisposable
     void DrawDetails(List<SurfaceOp> operations)
     {
         if (HomePage) { DrawHome(operations); return; }
+        if (OwnedGlassEnabled && !_host.IsLiquidGlassCapture)
+        {
+            var support = ReadingMaterialPolicy.Resolve(_lightText, _preferences.TintOpacity);
+            RoundRect(operations, 16, 12, 34, 34, 17,
+                ((uint)support.Opacity8Bit << 24) | (support.ColorArgb & 0x00ffffffu));
+        }
         Icon(operations, "\uE72B", 24, 20, 18,
             _accessibility.HighContrast ? _text : TypographyCatalog.Ink(InkRole.Primary, _lightText));
         if (WidgetsPage) { DrawBoard(operations); DrawPageNotice(operations); return; }
@@ -1410,6 +1460,7 @@ public sealed partial class WidgetScene : IDisposable
             Text(operations, Artist, 0, artistOffset, width, 20, TextRole.MediaDetailsArtist, InkRole.Secondary, center: true);
         }
         layer.Show(RenderTextLayer($"{form}Metadata", width, height, operations), new(width, height), trackChanged && !_drawingInvalidated && !_preferences.ReducedMotion && _uiSettings.AnimationsEnabled, _activeTrackDirection);
+        _metadataOperations[form] = operations.ToArray();
         _metadataKeys[form] = key;
     }
 
@@ -1442,6 +1493,7 @@ public sealed partial class WidgetScene : IDisposable
 
     void BuildControls()
     {
+        if(_liquidGlassTransportSubmissionPending)return;
         var controls = new List<AccessibleControl>
         {
             new(WidgetActions.Body, _form == WidgetForm.Details ? (HomePage ? "首页" : WidgetsPage ? "小组件面板" : _media.Connected ? $"{Title}，{Artist}" : "音乐连接说明") : "展开音乐组件", 0, 0, _presentedSize.X, _presentedSize.Y)
@@ -1449,6 +1501,9 @@ public sealed partial class WidgetScene : IDisposable
         var candidates = new Dictionary<int, (float Weight, WidgetForm Form, AccessibleControl Control)>();
         void Consider(AccessibleControl control, WidgetForm form, float weight)
         {
+            if((control.Id is WidgetActions.Previous or WidgetActions.Toggle or WidgetActions.Next)
+                &&!TransportLiquidGlassHandoffFrame.CanExposeTransportControls(form,_host.IsLiquidGlassCapture,
+                    OwnedGlassEnabled,_liquidGlassTransportSubmissionPending,_submittedLiquidGlassTransportFrame))return;
             if (weight <= .08f) return;
             float x = control.X + (_presentedSize.X - LayoutSize(form).X) / 2;
             float left = Math.Max(0, x), right = Math.Min(_presentedSize.X, x + control.Width);
@@ -1601,11 +1656,12 @@ public sealed partial class WidgetScene : IDisposable
 
     void SetPalette()
     {
+        _chrome.SetMaterialTint(_preferences.TintOpacity);
         if (!_accessibility.HighContrast)
         {
-            _text = TypographyCatalog.Ink(InkRole.Primary);
-            _secondary = TypographyCatalog.Ink(InkRole.Secondary);
-            _disabled = TypographyCatalog.Ink(InkRole.Disabled);
+            _text = TypographyCatalog.Ink(InkRole.Primary, _lightText);
+            _secondary = TypographyCatalog.Ink(InkRole.Secondary, _lightText);
+            _disabled = TypographyCatalog.Ink(InkRole.Disabled, _lightText);
             _accent = 0xFF5D6F84; _button = 0x81FFFFFF; _track = 0x29303A45;
             foreach (var depth in _waveDepth)depth.SetAppearance(0xFF596775,_text);
             return;
@@ -1621,7 +1677,7 @@ public sealed partial class WidgetScene : IDisposable
     // Only disconnected Peek uses this plate; connected Peek text sits on the shell.
     void ClockWhiteplate(List<SurfaceOp> operations, float x, float y, float width, float height, float radius)
     {
-        if (_accessibility.HighContrast) return;
+        if (_accessibility.HighContrast || OwnedGlassEnabled) return;
         float alpha = Math.Clamp((.36f-_preferences.TintOpacity)/(1-_preferences.TintOpacity),0,.22f);
         if (alpha <= .01f) return;
         RoundRect(operations, x, y, width, height, radius, (uint)Math.Round(alpha * 255) << 24 | 0x00FFFFFF);
@@ -1639,6 +1695,7 @@ public sealed partial class WidgetScene : IDisposable
         // composed background proves its lower emphasis still meets 4.5:1.
         if (ink == InkRole.Caption) ink = InkRole.Secondary;
         bool promote = clockPlate ? _clockPlatePromoteSecondary : _promoteSecondary;
+        if (OwnedGlassEnabled && !_host.IsLiquidGlassCapture && role is TextRole.MediaCapsuleArtist or TextRole.MediaPeekArtist or TextRole.MediaDetailsArtist or TextRole.ClockLegacyAux) promote = true;
         if (promote && ink == InkRole.Secondary) ink = InkRole.Primary;
         uint color = _accessibility.HighContrast ? _text : TypographyCatalog.Ink(ink, clockPlate ? _clockPlateLightText : _lightText);
         var operation=SurfaceOp.Typography(value, role, x, y, width, height, color, center, flags, CurrentTypography.Locale);
@@ -1660,7 +1717,9 @@ public sealed partial class WidgetScene : IDisposable
     {
         Profile = _host.TypographyProfile.ToString(), Revision = _host.TypographyRevision,
         Locale = CurrentTypography.Locale, Dpi = _host.Context.Dpi, Form = _form.ToString(),
-        InkState = new {BodyLight=_lightText,BodyPromoted=_promoteSecondary,ClockPlateLight=_clockPlateLightText,ClockPlatePromoted=_clockPlatePromoteSecondary},
+        InkState = new {BodyLight=_lightText,BodyPromoted=_promoteSecondary,ClockPlateLight=_clockPlateLightText,ClockPlatePromoted=_clockPlatePromoteSecondary,
+            LiquidGlassInkSelected=_host.LiquidGlassInkAvailable&&_host.IsLiquidGlassCapture&&OwnedGlassEnabled,
+            Note="Layer colors are requested ink values. Adaptive ink is quarantined; composed contrast is not measured."},
         MusicCapsuleWidth = _musicCapsuleWidth, Cache = _host.TextCacheStats,
         Layers = _typographyLayers.Select(entry => new
         {
@@ -1709,6 +1768,8 @@ public sealed partial class WidgetScene : IDisposable
 
     void InvalidateDrawingCaches()
     {
+        _ownedClockKey=null;
+        InvalidateReadingSupport();
         _drawingInvalidated = true;
         _lastTimeline = null;
         _lastRootName = null;
@@ -1742,6 +1803,7 @@ public sealed partial class WidgetScene : IDisposable
         EnsureUiThread();
         if (_disposed) return;
         _disposed = true;
+        DisposeDesktopMaterialVisuals();
         DisposeBoardVisuals();
         _homeVisual?.Dispose();
         _artworkTimer.Stop();
@@ -1801,12 +1863,14 @@ public sealed partial class WidgetScene : IDisposable
         readonly CompositionColorBrush _hoverInk;
         CompositionDrawingSurface? _surface;
         bool _pressed, _hovered;
+        bool _ownedGlass;
+        readonly bool _systemGlass;
         byte _shade;
         double _pressedAt, _releasedAt;
         static double Now => Stopwatch.GetTimestamp() * 1000d / Stopwatch.Frequency;
         public TransportVisual(NativeWidgetHost host, bool toggle)
         {
-            _compositor = host.Compositor;
+            _compositor = host.Compositor;_systemGlass=host.IsLiquidGlassCapture;
             Visual = _compositor.CreateSpriteVisual();
             _brush = _compositor.CreateSurfaceBrush();
             _brush.Stretch = CompositionStretch.Fill;
@@ -1829,9 +1893,19 @@ public sealed partial class WidgetScene : IDisposable
         {
             Visual.Size = _hover.Size = new(size, size); Visual.CenterPoint = new(size / 2, size / 2, 0);
             _hoverGeometry.Center = _hoverGeometry.Radius = new(size / 2);
-            _plate.SetBounds(0,0,size,size,size/2);
+            if(_ownedGlass&&_systemGlass)_plate.SetBounds(1,1,size-2,size-2,(size-2)/2);else _plate.SetBounds(0,0,size,size,size/2);
         }
         public void SetAppearance(uint fill,uint ink,bool highContrast)=>_plate.SetAppearance(fill,ink,highContrast);
+        public void SetOwnedGlass(bool value)
+        {
+            if(_ownedGlass==value)return;_ownedGlass=value;
+            // Native same-profile light now owns both the face and contact edge.
+            // Keep the glyph outside it; a second C# keycap would double the rim.
+            _plate.SetOpticalGlass(value&&_systemGlass);_plate.Visual.IsVisible=!value;_hover.IsVisible=!value;
+            _skipGlyph?.SetOpticalGlass(value&&_systemGlass);_playbackGlyph?.SetOpticalGlass(value&&_systemGlass);
+            if(value&&_systemGlass){float size=Visual.Size.X;_plate.SetBounds(1,1,size-2,size-2,(size-2)/2);}
+            Visual.StopAnimation("Scale");Visual.Scale=Vector3.One;
+        }
         public void Replace(CompositionDrawingSurface replacement) => ReplaceSurface(ref _surface, _brush, replacement);
         public void UpdateSkipGlyph(bool next, uint color, float buttonSize, float iconSize)
             => _skipGlyph!.Update(next, color, buttonSize, iconSize);
@@ -1839,6 +1913,7 @@ public sealed partial class WidgetScene : IDisposable
             => _playbackGlyph!.Update(playing, color, buttonSize, iconSize, reducedMotion);
         public void SetFeedback(bool hovered, bool pressed, bool reducedMotion)
         {
+            if(_ownedGlass){_hovered=hovered;_pressed=pressed;return;}
             _hovered = hovered;_plate.SetFeedback(hovered,pressed,reducedMotion);
             byte shade = pressed ? (byte)0x26 : hovered ? (byte)0x10 : (byte)0;
             if (reducedMotion)
@@ -1879,6 +1954,7 @@ public sealed partial class WidgetScene : IDisposable
         }
         public void Activate(bool reducedMotion)
         {
+            if(_ownedGlass)return;
             if (reducedMotion || _pressed || Now - _releasedAt < 120) return;
             using var easing = _compositor.CreateCubicBezierEasingFunction(new(.2f, 1), new(.35f, 1));
             using var animation = _compositor.CreateVector3KeyFrameAnimation();

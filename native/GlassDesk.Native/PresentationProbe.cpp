@@ -1,3 +1,4 @@
+#error Screen_capture_is_prohibited_by_the_GlassDesk_user_requirement
 // QA-only actual desktop-presentation observer. Never shows a window or sends
 // input. Only ROI hashes, rectangles, and presentation timestamps are persisted;
 // acquired desktop pixels and temporary readback pixels are never saved.

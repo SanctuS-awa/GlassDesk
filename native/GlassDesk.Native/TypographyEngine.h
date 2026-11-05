@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-// Shared by the headless P1 probe and the future V2 measure/draw bridge. No HWND,
+// Shared by the headless P1 probe and the V2 measure/draw bridge. No HWND,
 // registered font, graphics-device state, or product configuration is owned here.
 // Caller initializes its COM/WinRT apartment. Returned layouts are shared and
 // must be treated as read-only, including their IDWriteTextLayout interface.
@@ -43,6 +43,10 @@ struct Metrics
 {
     float advance{}, widthIncludingTrailingWhitespace{}, height{}, baseline{}, lineHeight{};
     uint32_t lineCount{};
+};
+struct InkBounds
+{
+    float left{}, top{}, right{}, bottom{};
 };
 struct ScriptRun
 {
@@ -87,4 +91,8 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
+
+// Returns a layout-local visible-extents rectangle from DirectWrite's overhang
+// metrics. Coordinates are relative to the layout alignment edges.
+InkBounds InkBoundsForLayout(IDWriteTextLayout* layout);
 }

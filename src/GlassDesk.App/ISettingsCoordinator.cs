@@ -9,6 +9,8 @@ public readonly record struct SettingsUpdateResult(bool Success, string? Message
 public interface ISettingsCoordinator
 {
     bool IsUiPreview=>false;
+    bool UsesLiquidGlassCapture=>false;
+    Windows.Graphics.IGeometrySource2D? CreatePreviewGeometry(System.Numerics.Vector2[] points)=>null;
     void PreviewCompanionAppearance(uint color,string appearanceId) { }
     WidgetPreferences Preferences { get; }
     MediaSnapshot Media { get; }
@@ -29,6 +31,7 @@ public interface ISettingsCoordinator
     event Action? Changed;
     Task<SettingsUpdateResult> UpdatePreferencesAsync(WidgetPreferences preferences);
     void ResetPosition();
+    void ResetLiquidGlassCapture() { }
     void OpenMusic();
     Task RetryMediaAsync();
     void ToggleVisibility();

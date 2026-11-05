@@ -28,10 +28,23 @@
 #include <string>
 #include <algorithm>
 #include <limits>
+#include <initializer_list>
+#include <iterator>
+#include <utility>
+#include <cstdint>
 #include "NativeApi.h"
+#include "PointerSurfaceGate.h"
 #include "Accessibility.h"
 #include "LiquidGlass.h"
+#include "LiquidGlassCapture.h"
+#include "SurfaceTension.h"
 #include "TypographyEngine.h"
+#include "DesktopMaterialApi.h"
+#include "OwnedImageGlass.h"
+#include "CleanupResult.h"
+#include "DesktopSourceViewport.h"
+#include "ArtworkFailurePolicy.h"
+#include "ShadowRasterProfile.h"
 
 using namespace winrt;
 using namespace winrt::Windows::Foundation;
@@ -45,10 +58,71 @@ namespace gd
 {
 constexpr UINT DpiTimer=71;
 constexpr UINT LiquidTimer=72;
+constexpr UINT AuthorizedShortTestTimer=73;
+constexpr UINT LiquidCaptureTimer=74;
 constexpr UINT RecoveredMessage=WM_APP+74;
+constexpr UINT SourceRefreshMessage=WM_APP+75;
 constexpr int ContextEvent=100;
 constexpr wchar_t WindowClass[]=L"GlassDesk.Native.Host.0.1";
+constexpr wchar_t GlassWindowClass[]=L"GlassDesk.Native.Glass.0.1";
 constexpr wchar_t ShadowClass[]=L"GlassDesk.Native.Shadow.0.1";
+
+// Never report success after a failed window operation, even if a provider
+// leaves last-error at zero. Capture it before another window call can run.
+HRESULT WindowCallResult(BOOL succeeded) noexcept
+{
+    if(succeeded)return S_OK;
+    const DWORD error=GetLastError();
+    return error?HRESULT_FROM_WIN32(error):E_FAIL;
+}
+
+void LogLiquidCaptureFailure(HRESULT failure) noexcept
+{
+    SYSTEMTIME now{};GetLocalTime(&now);
+    wchar_t line[192]{};
+    const int length=swprintf_s(line,std::size(line),L"%04u-%02u-%02u %02u:%02u:%02u liquid-glass capture failed: 0x%08X\r\n",
+        now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,static_cast<unsigned>(failure));
+    if(length<=0)return;OutputDebugStringW(line);
+    wchar_t localAppData[MAX_PATH]{};
+    const DWORD localLength=GetEnvironmentVariableW(L"LOCALAPPDATA",localAppData,static_cast<DWORD>(std::size(localAppData)));
+    if(localLength==0||localLength>=std::size(localAppData))return;
+    wchar_t appDirectory[MAX_PATH]{},logDirectory[MAX_PATH]{},logPath[MAX_PATH]{};
+    if(swprintf_s(appDirectory,std::size(appDirectory),L"%s\\GlassDesk",localAppData)<0||
+       swprintf_s(logDirectory,std::size(logDirectory),L"%s\\logs",appDirectory)<0||
+       swprintf_s(logPath,std::size(logPath),L"%s\\liquid-glass.log",logDirectory)<0)return;
+    CreateDirectoryW(appDirectory,nullptr);CreateDirectoryW(logDirectory,nullptr);
+    HANDLE file=CreateFileW(logPath,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)return;
+    DWORD written{};WriteFile(file,line,static_cast<DWORD>(length*sizeof(wchar_t)),&written,nullptr);CloseHandle(file);
+}
+
+
+HRESULT PhysicalFrameSize(GDFrame const& frame,unsigned dpi,bool legacyFlag,int& width,int& height) noexcept
+{
+    width=height=0;
+    const float scale=static_cast<float>(dpi)/96.0f;
+    if(!std::isfinite(scale)||scale<=0.0f||
+        (legacyFlag&&(scale<0.5f||scale>4.0f)))return E_INVALIDARG;
+    const float physicalWidth=frame.width*scale,physicalHeight=frame.height*scale;
+    const double maxInt=static_cast<double>(std::numeric_limits<int>::max());
+    if(!std::isfinite(physicalWidth)||!std::isfinite(physicalHeight)||
+        physicalWidth<0.5f||physicalHeight<0.5f||physicalWidth>maxInt||physicalHeight>maxInt)
+        return E_BOUNDS;
+    const long roundedWidth=std::lround(physicalWidth),roundedHeight=std::lround(physicalHeight);
+    if(roundedWidth<1||roundedHeight<1||roundedWidth>std::numeric_limits<int>::max()||
+        roundedHeight>std::numeric_limits<int>::max())return E_BOUNDS;
+    width=static_cast<int>(roundedWidth);height=static_cast<int>(roundedHeight);
+    if(legacyFlag&&(width>1024||height>1024))return E_BOUNDS;
+    return S_OK;
+}
+
+bool ValidFrameRequest(GDFrame const& frame,float tension) noexcept
+{
+    return std::isfinite(tension)&&std::abs(tension)<=1.15f&&
+        std::isfinite(frame.width)&&std::isfinite(frame.height)&&std::isfinite(frame.radius)&&
+        std::isfinite(frame.blur)&&std::isfinite(frame.tint)&&frame.width>=1&&frame.height>=1&&
+        frame.width<=4096&&frame.height<=4096&&frame.radius>=0&&frame.blur>=0&&frame.blur<=100;
+}
 
 struct MaterialEffect : implements<MaterialEffect,IGraphicsEffect,IGraphicsEffectSource,EffectInterop>
 {
@@ -133,54 +207,154 @@ struct GeometrySource : implements<GeometrySource,winrt::Windows::Graphics::IGeo
     }
 };
 
+// Composition owns the live backdrop. These paths only mask a clearer
+// optical edge; no pixels leave the system compositor or enter app memory.
+struct RetainedGeometrySource : implements<RetainedGeometrySource,winrt::Windows::Graphics::IGeometrySource2D,ABI::Windows::Graphics::IGeometrySource2DInterop>
+{
+    com_ptr<ID2D1Geometry> geometry;
+    explicit RetainedGeometrySource(com_ptr<ID2D1Geometry> value):geometry(std::move(value)){}
+    HRESULT __stdcall GetGeometry(ID2D1Geometry** value)noexcept override
+    {if(!value)return E_POINTER;geometry.copy_to(value);return S_OK;}
+    HRESULT __stdcall TryGetGeometryUsingFactory(ID2D1Factory* factory,ID2D1Geometry** value)noexcept override
+    {
+        if(!factory||!value)return E_POINTER;*value=nullptr;
+        try
+        {
+            com_ptr<ID2D1PathGeometry> copy;check_hresult(factory->CreatePathGeometry(copy.put()));
+            com_ptr<ID2D1GeometrySink> sink;check_hresult(copy->Open(sink.put()));
+            check_hresult(geometry->Simplify(D2D1_GEOMETRY_SIMPLIFICATION_OPTION_CUBICS_AND_LINES,nullptr,sink.get()));
+            check_hresult(sink->Close());copy.as<ID2D1Geometry>().copy_to(value);return S_OK;
+        }catch(...){return to_hresult();}
+    }
+};
+
 struct Host : std::enable_shared_from_this<Host>
 {
     DWORD ownerThread{GetCurrentThreadId()};
-    HWND window{},shadow{};
+    HWND window{},glassWindow{},shadow{};
+    HANDLE systemSourceSingleton{};
+    HRESULT shutdownResult{S_OK};
     GDCallback callback{};void* user{};
     GDFrame frame{232,48,24,20,.24f,0};
-    unsigned dpi{96}; bool visible{},tracking{},captured{},destroying{},fallback{};
-    int cachedWidth{},cachedHeight{};float cachedRadius{-1};unsigned cachedDpi{};
+    unsigned dpi{96}; bool visible{},tracking{},captured{},destroying{},fallback{},restoringTopmost{};
+    int cachedWidth{},cachedHeight{};float cachedRadius{-1},surfaceTension{},cachedTension{-2};unsigned cachedDpi{};
     winrt::Windows::System::DispatcherQueueController queue{nullptr};
-    Compositor compositor{nullptr}; DesktopWindowTarget target{nullptr};
-    ContainerVisual root{nullptr},content{nullptr};
-    SpriteVisual glass{nullptr},liquidOverlay{nullptr},tint{nullptr},grain{nullptr};
-    ShapeVisual border{nullptr};CompositionRoundedRectangleGeometry clipGeometry{nullptr},borderGeometry{nullptr};
-    CompositionSpriteShape borderShape{nullptr};
+    Compositor compositor{nullptr}; DesktopWindowTarget target{nullptr},glassTarget{nullptr};
+    ContainerVisual root{nullptr},glassRoot{nullptr},content{nullptr};
+    SpriteVisual clearEdge{nullptr};
+    CompositionEffectBrush clearBackdrop{nullptr};
+    CompositionPathGeometry clearEdgeGeometry{nullptr};
+    bool cachedClearEdge{};
+    SpriteVisual glass{nullptr},liquidOverlay{nullptr},liquidRefractionOverlay{nullptr},tint{nullptr},grain{nullptr},opticalLight{nullptr};
+    ShapeVisual border{nullptr},bevel{nullptr};
+    CompositionPathGeometry tensionGeometry{nullptr};
+    CompositionRoundedRectangleGeometry clipGeometry{nullptr},borderGeometry{nullptr},shoulderGeometry{nullptr},meniscusGeometry{nullptr};
+    CompositionSpriteShape borderShape{nullptr},shoulderShape{nullptr},meniscusShape{nullptr};
     CompositionEffectBrush backdrop{nullptr};
-    CompositionLinearGradientBrush tintBrush{nullptr},borderBrush{nullptr};
+    CompositionLinearGradientBrush tintBrush{nullptr},borderBrush{nullptr},shoulderBrush{nullptr},meniscusBrush{nullptr};
     CompositionColorBrush solidTintBrush{nullptr},solidBorderBrush{nullptr};
     float materialTint{-1},materialBlur{-1};
     COLORREF materialWindowColor{CLR_INVALID},materialBorderColor{CLR_INVALID};
-    bool materialApplied{},materialSolid{},materialGrainVisible{};
+    bool materialApplied{},materialSolid{},materialGrainVisible{},materialLiquidCapture{};
     CompositionGraphicsDevice graphics{nullptr};CompositionDrawingSurface grainSurface{nullptr};
     com_ptr<ID3D11Device> d3d;com_ptr<ID3D11DeviceContext> d3dContext;
     com_ptr<ID2D1Factory1> d2dFactory;com_ptr<ID2D1Device> d2d;com_ptr<ID2D1DeviceContext> cacheContext;
     com_ptr<ID2D1Factory> geometryFactory;
     com_ptr<IDWriteFactory> textFactory;com_ptr<IWICImagingFactory> wic;
     std::unique_ptr<typography::Engine> typographyEngine;
-    bool liquidEnabled{},liquidReady{};
+    bool liquidEnabled{},liquidReady{},liquidPresented{};
+    bool liquidCaptureCandidate{},liquidCapturePresented{},liquidCaptureFuseTripped{};
+    HRESULT liquidCaptureFailure{S_OK};
+    bool opticalReady{};
+    CompositionSurfaceBrush opticalBrush{nullptr};CompositionDrawingSurface opticalSurface{nullptr};
     std::unique_ptr<LiquidGlass> liquid;
+    bool authorizedIncidentShortTest{};
+    uint32_t materialBackend{1}; // 0 solid, 1 legacy, 2 owned-image candidate; immutable.
+    bool graphicsCreated{},ownedFaulted{},ownedImageSet{},ownedEligible{};
+    uint64_t ownedSequence{};
+    std::vector<float> ownedFrameKey;
+    GDOwnedGlassImageMapping ownedMapping{};
+    std::unique_ptr<OwnedImageGlass> ownedRenderer;
+    CompositionDrawingSurface ownedSurface{nullptr};
+    CompositionSurfaceBrush ownedBrush{nullptr};
     CompositionSurfaceBrush liquidBrush{nullptr};CompositionDrawingSurface liquidSurface{nullptr};
+    winrt::Windows::UI::Composition::ICompositionSurface liquidCaptureSurface{nullptr},liquidRefractionSurface{nullptr},liquidTintSurface{nullptr},liquidInkSurface{nullptr};
+    CompositionSurfaceBrush liquidCaptureBrush{nullptr},liquidRefractionBrush{nullptr},liquidTintCaptureBrush{nullptr};
+    void* attachedLiquidSwapChain{};void* attachedLiquidRefractionSwapChain{};void* attachedLiquidTintSwapChain{};void* attachedLiquidInkSwapChain{};
+    uint64_t liquidInkSurfaceGeneration{};
+    std::unique_ptr<liquidglass::LiquidGlassCapture> liquidCapture;
     std::list<ImageEntry> images;
-    HDC shadowDc{};HBITMAP shadowBitmap{};HGDIOBJ previousBitmap{};void* shadowBits{};
-    int shadowWidth{},shadowHeight{};float shadowRadius{-1};unsigned shadowDpi{};
+    HDC shadowDc{};HBITMAP shadowBitmap{},shadowRetiredBitmap{};void* shadowBits{};
+    int shadowWidth{},shadowHeight{};float shadowRadius{-1},shadowTension{-2};unsigned shadowDpi{};
+    unsigned shadowCapacityWidth{},shadowCapacityHeight{};bool shadowOpticalProfile{};
     int shadowX{std::numeric_limits<int>::min()},shadowY{std::numeric_limits<int>::min()};bool shadowShown{};
     std::shared_ptr<AccessibleState> accessibility=std::make_shared<AccessibleState>();
     ComPtr<ElementProvider> provider;
 
     ~Host(){Shutdown();}
     float Scale()const{return dpi/96.0f;}
+    void EnsureTopmost()
+    {
+        if(destroying||restoringTopmost||!visible||!IsWindowVisible(window))return;
+        restoringTopmost=true;
+        HRESULT result=WindowCallResult(SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER));
+        if(SUCCEEDED(result)&&glassWindow)
+            result=WindowCallResult(SetWindowPos(glassWindow,window,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER));
+        restoringTopmost=false;
+        check_hresult(result);
+    }
+    HRESULT PositionHostWindows(int x,int y,int width,int height,UINT flags) noexcept
+    {
+        if(!window)return E_HANDLE;
+        RECT current{};
+        if((flags&(SWP_NOMOVE|SWP_NOSIZE))&&!GetWindowRect(window,&current))return HRESULT_FROM_WIN32(GetLastError());
+        if(flags&SWP_NOMOVE){x=current.left;y=current.top;}
+        if(flags&SWP_NOSIZE){width=current.right-current.left;height=current.bottom-current.top;}
+        if(!desktopviewport::ClampDesktopPlacement(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN),width,height,x,y))return E_INVALIDARG;
+        flags|=SWP_NOACTIVATE|SWP_NOZORDER;
+        if(!glassWindow)return WindowCallResult(SetWindowPos(window,nullptr,x,y,width,height,flags));
+        HDWP batch=BeginDeferWindowPos(2);
+        if(!batch)return HRESULT_FROM_WIN32(GetLastError());
+        batch=DeferWindowPos(batch,glassWindow,nullptr,x,y,width,height,flags);
+        if(!batch)return HRESULT_FROM_WIN32(GetLastError());
+        batch=DeferWindowPos(batch,window,nullptr,x,y,width,height,flags);
+        if(!batch)return HRESULT_FROM_WIN32(GetLastError());
+        return WindowCallResult(EndDeferWindowPos(batch));
+    }
+    void SyncGlassWindowBounds() noexcept
+    {
+        if(!window||!glassWindow)return;
+        RECT contentBounds{},glassBounds{};
+        if(!GetWindowRect(window,&contentBounds)||!GetWindowRect(glassWindow,&glassBounds))return;
+        if(contentBounds.left==glassBounds.left&&contentBounds.top==glassBounds.top&&
+           contentBounds.right==glassBounds.right&&contentBounds.bottom==glassBounds.bottom)return;
+        SetWindowPos(glassWindow,nullptr,contentBounds.left,contentBounds.top,
+            contentBounds.right-contentBounds.left,contentBounds.bottom-contentBounds.top,SWP_NOACTIVATE|SWP_NOZORDER);
+    }
     HRESULT CheckThread()const{return ownerThread==GetCurrentThreadId()?S_OK:RPC_E_WRONG_THREAD;}
+    void TripOwned(HRESULT failure=E_ABORT) noexcept
+    {
+        if(materialBackend!=2||ownedFaulted)return;
+        ownedFaulted=true;ownedEligible=false;
+        visible=false;ShowWindow(window,SW_HIDE);if(glassWindow)ShowWindow(glassWindow,SW_HIDE);if(shadow)ShowWindow(shadow,SW_HIDE);
+        try{UpdateAccessibleGeometry();}catch(...){}
+        // The managed callback persists the fuse before any possible later UI
+        // event. No attempt to replace/recreate the device or backend follows.
+        Emit(12,0,0,0,0,-3,double(static_cast<uint32_t>(failure)));
+        // No new material/property submission after the first fault. The host
+        // is hidden; only explicit teardown and read-only diagnostics remain.
+    }
     void Emit(int kind,float x=0,float y=0,int screenX=0,int screenY=0,int control=0,double value=0)noexcept
     {
         if(callback&&!destroying){GDPointer event{kind,x,y,screenX,screenY,control,value};callback(user,&event);}
     }
-    void EmitPointer(int kind,LPARAM point,double value=0)
+    void EmitPointer(int kind,LPARAM point,bool inside,double value=0)
     {
         POINT screen{GET_X_LPARAM(point),GET_Y_LPARAM(point)};ClientToScreen(window,&screen);
         auto x=GET_X_LPARAM(point)/Scale(),y=GET_Y_LPARAM(point)/Scale();
-        Emit(kind,x,y,screen.x,screen.y,Hit(x,y),value);
+        const int control=inside?Hit(x,y):0;
+        Emit(kind,x,y,screen.x,screen.y,input::ControlIdForSurface(inside,control),value);
     }
     int Hit(float x,float y)
     {
@@ -189,12 +363,12 @@ struct Host : std::enable_shared_from_this<Host>
             if(x>=item->x&&y>=item->y&&x<item->x+item->width&&y<item->y+item->height)return item->id;
         return 0;
     }
+    float EffectiveTension()const noexcept
+    {return liquidEnabled&&!frame.solid&&!fallback?surfaceTension:0;}
     bool Inside(float x,float y)const
     {
-        if(x<0||y<0||x>=frame.width||y>=frame.height)return false;
-        auto radius=std::min(frame.radius,std::min(frame.width,frame.height)/2);
-        auto cx=std::clamp(x,radius,frame.width-radius),cy=std::clamp(y,radius,frame.height-radius);
-        auto dx=x-cx,dy=y-cy;return dx*dx+dy*dy<=radius*radius;
+        auto radius=SurfaceRadius(frame.width,frame.height,frame.radius,EffectiveTension());
+        return SurfaceDistance(x,y,frame.width,frame.height,radius,1,EffectiveTension())<=0;
     }
     GDContext Context()const
     {RECT rectangle{};GetWindowRect(window,&rectangle);return {rectangle.left,rectangle.top,frame.width,frame.height,dpi};}
@@ -203,6 +377,7 @@ struct Host : std::enable_shared_from_this<Host>
         RECT rectangle{};GetWindowRect(window,&rectangle);
         std::lock_guard lock(accessibility->mutex);
         accessibility->rectangle=rectangle;accessibility->dpi=dpi;accessibility->visible=visible;
+        accessibility->surfaceShape={frame.width,frame.height,frame.radius,EffectiveTension()};
     }
     unsigned CurrentMonitorDpi()const
     {
@@ -216,8 +391,13 @@ struct Host : std::enable_shared_from_this<Host>
     }
     void ApplyDpi(unsigned value,int x,int y)
     {
-        dpi=value?value:96;
-        SetWindowPos(window,nullptr,x,y,int(std::lround(frame.width*Scale())),int(std::lround(frame.height*Scale())),SWP_NOACTIVATE|SWP_NOZORDER);
+        if(ownedFaulted&&(materialBackend==2))return;
+        const unsigned nextDpi=value?value:96;
+        dpi=nextDpi;
+        int width{},height{};
+        check_hresult(PhysicalFrameSize(frame,dpi,false,width,height));
+        check_hresult(PositionHostWindows(x,y,width,height,SWP_NOACTIVATE));
+        if(ownedFaulted&&(materialBackend==2))return;
         Layout();UpdateAccessibleGeometry();Emit(9);
     }
     void ReconcileDpi()
@@ -230,20 +410,27 @@ struct Host : std::enable_shared_from_this<Host>
     }
     void CreateGraphics()
     {
-        if(liquid){liquid.reset();liquidReady=false;liquidSurface=nullptr;liquidBrush=nullptr;if(glass)glass.Brush(backdrop);}
+        // Candidate creation is single-attempt. Foreground surface errors must
+        // not silently rebuild a graphics device after the experiment trips.
+        if((materialBackend==2)&&(graphicsCreated||ownedFaulted))throw hresult_error(E_ABORT);
+        graphicsCreated=true;
+        if(liquid){liquid.reset();liquidReady=false;liquidPresented=false;opticalReady=false;liquidSurface=nullptr;liquidBrush=nullptr;
+            opticalSurface=nullptr;opticalBrush=nullptr;if(opticalLight)opticalLight.Brush(nullptr);if(glass)glass.Brush(backdrop);}
+        {
         images.clear();cacheContext=nullptr;d2d=nullptr;d3dContext=nullptr;d3d=nullptr;
         UINT flags=D3D11_CREATE_DEVICE_BGRA_SUPPORT;D3D_FEATURE_LEVEL level{};
         auto hr=D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,flags,nullptr,0,D3D11_SDK_VERSION,d3d.put(),&level,d3dContext.put());
-        if(FAILED(hr))check_hresult(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,flags,nullptr,0,D3D11_SDK_VERSION,d3d.put(),&level,d3dContext.put()));
+        if(FAILED(hr)){if(materialBackend==2)check_hresult(hr);else check_hresult(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,flags,nullptr,0,D3D11_SDK_VERSION,d3d.put(),&level,d3dContext.put()));}
         d3dContext.as<ID3D11Multithread>()->SetMultithreadProtected(TRUE);
         if(!d2dFactory)check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,__uuidof(ID2D1Factory1),nullptr,d2dFactory.put_void()));
         auto dxgi=d3d.as<IDXGIDevice>();check_hresult(d2dFactory->CreateDevice(dxgi.get(),d2d.put()));
+        }
         check_hresult(d2d->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,cacheContext.put()));
         if(graphics)check_hresult(graphics.as<ABI::Windows::UI::Composition::ICompositionGraphicsDeviceInterop>()->SetRenderingDevice(d2d.get()));
         else check_hresult(compositor.as<ABI::Windows::UI::Composition::ICompositorInterop>()->CreateGraphicsDevice(d2d.get(),reinterpret_cast<ABI::Windows::UI::Composition::ICompositionGraphicsDevice**>(put_abi(graphics))));
         if(!textFactory)check_hresult(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),reinterpret_cast<::IUnknown**>(textFactory.put())));
         if(!wic)check_hresult(CoCreateInstance(CLSID_WICImagingFactory2,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(wic.put())));
-        if(shadow){liquid=std::make_unique<LiquidGlass>(window,shadow,d3d.get(),d3dContext.get(),graphics);liquid->SetEnabled(liquidEnabled);}
+        if(shadow&&materialBackend==1){liquid=std::make_unique<LiquidGlass>(window,shadow,d3d.get(),d3dContext.get(),graphics);liquid->SetEnabled(false);}
     }
     static D2D1_COLOR_F Color(unsigned argb)
     {return D2D1::ColorF(((argb>>16)&255)/255.0f,((argb>>8)&255)/255.0f,(argb&255)/255.0f,((argb>>24)&255)/255.0f);}
@@ -281,26 +468,57 @@ struct Host : std::enable_shared_from_this<Host>
         auto effect=make_self<MaterialEffect>();effect->grain=true;effect->name=L"GlassGrain";effect->source=CompositionEffectSourceParameter(L"Texture");
         auto brush=compositor.CreateEffectFactory(effect.as<IGraphicsEffect>()).CreateBrush();
         auto texture=compositor.CreateSurfaceBrush(grainSurface);texture.Stretch(CompositionStretch::None);
-        brush.SetSourceParameter(L"Texture",texture);grain.Brush(brush);grain.Opacity(.012f);
+        brush.SetSourceParameter(L"Texture",texture);grain.Brush(brush);grain.Opacity(.006f);
     }
     void Initialize(HWND hwnd)
     {
         window=hwnd;dpi=GetDpiForWindow(hwnd);if(!dpi)dpi=96;
-        BOOL enabled=TRUE;auto backdropResult=DwmSetWindowAttribute(hwnd,DWMWA_USE_HOSTBACKDROPBRUSH,&enabled,sizeof(enabled));
-        MARGINS margins{-1,-1,-1,-1};auto frameResult=DwmExtendFrameIntoClientArea(hwnd,&margins);
-        fallback=FAILED(backdropResult)||FAILED(frameResult);
-        compositor=Compositor();
-        check_hresult(compositor.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>()->CreateDesktopWindowTarget(hwnd,TRUE,reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(put_abi(target))));
-        root=compositor.CreateContainerVisual();root.RelativeSizeAdjustment({1,1});target.Root(root);
-        clipGeometry=compositor.CreateRoundedRectangleGeometry();root.Clip(compositor.CreateGeometricClip(clipGeometry));
+        glassWindow=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP|WS_EX_TRANSPARENT,
+            GlassWindowClass,L"GlassDesk Liquid Glass",WS_POPUP,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),this);
+        check_bool(glassWindow!=nullptr);
+        // The owned-image backend never requests or creates a system backdrop.
+        if(materialBackend==1){
+            BOOL enabled=TRUE;auto backdropResult=DwmSetWindowAttribute(glassWindow,DWMWA_USE_HOSTBACKDROPBRUSH,&enabled,sizeof(enabled));
+            MARGINS margins{-1,-1,-1,-1};auto frameResult=DwmExtendFrameIntoClientArea(glassWindow,&margins);
+            fallback=FAILED(backdropResult)||FAILED(frameResult);
+        }
+        {
+            compositor=Compositor();
+            check_hresult(compositor.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>()->CreateDesktopWindowTarget(hwnd,TRUE,reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(put_abi(target))));
+            check_hresult(compositor.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>()->CreateDesktopWindowTarget(glassWindow,TRUE,reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(put_abi(glassTarget))));
+        }
+        root=compositor.CreateContainerVisual();root.RelativeSizeAdjustment(winrt::Windows::Foundation::Numerics::float2{1,1});
+        glassRoot=compositor.CreateContainerVisual();glassRoot.RelativeSizeAdjustment(winrt::Windows::Foundation::Numerics::float2{1,1});
+        target.Root(root);
+        glassTarget.Root(glassRoot);
+        tensionGeometry=compositor.CreatePathGeometry();
+        clipGeometry=compositor.CreateRoundedRectangleGeometry();root.Clip(compositor.CreateGeometricClip(clipGeometry));glassRoot.Clip(compositor.CreateGeometricClip(clipGeometry));
+        glass=compositor.CreateSpriteVisual();glassRoot.Children().InsertAtTop(glass);
+        clearEdge=compositor.CreateSpriteVisual();clearEdge.IsVisible(false);
+        clearEdgeGeometry=compositor.CreatePathGeometry();clearEdge.Clip(compositor.CreateGeometricClip(clearEdgeGeometry));
+        // Both backdrop brushes must sample behind the same HWND. Putting the
+        // edge on the content HWND can sample the glass and shadow underneath
+        // a second time as other windows move behind the widget.
+        glassRoot.Children().InsertAtTop(clearEdge);
+        if(materialBackend==1){
         auto effect=make_self<MaterialEffect>();effect->source=CompositionEffectSourceParameter(L"Backdrop");
         backdrop=compositor.CreateEffectFactory(effect.as<IGraphicsEffect>(),{L"GlassBlur.BlurAmount"}).CreateBrush();
         backdrop.SetSourceParameter(L"Backdrop",compositor.CreateHostBackdropBrush());
-        glass=compositor.CreateSpriteVisual();glass.Brush(backdrop);root.Children().InsertAtTop(glass);
-        // Keep the real frosted backdrop as the base. Liquid glass is an optical
-        // overlay, not a replacement that restores sharp desktop text underneath.
-        liquidOverlay=compositor.CreateSpriteVisual();liquidOverlay.Opacity(.34f);
-        liquidOverlay.IsVisible(false);root.Children().InsertAtTop(liquidOverlay);
+        glass.Brush(backdrop);
+        // A low-blur meniscus around the frosted body supplies optical depth
+        // without screen capture, duplicated wallpaper, or a painted white rim.
+        auto edgeEffect=make_self<MaterialEffect>();edgeEffect->name=L"GlassEdgeBlur";
+        edgeEffect->source=CompositionEffectSourceParameter(L"Backdrop");
+        clearBackdrop=compositor.CreateEffectFactory(edgeEffect.as<IGraphicsEffect>(),{L"GlassEdgeBlur.BlurAmount"}).CreateBrush();
+        clearBackdrop.SetSourceParameter(L"Backdrop",compositor.CreateHostBackdropBrush());
+        clearEdge.Brush(clearBackdrop);
+        }
+        // Capture material outputs stay on independent GPU surfaces so the
+        // base, lens, and tint can be tuned without flattening them together.
+        liquidOverlay=compositor.CreateSpriteVisual();liquidOverlay.Opacity(0);
+        liquidOverlay.IsVisible(false);glassRoot.Children().InsertAtTop(liquidOverlay);
+        liquidRefractionOverlay=compositor.CreateSpriteVisual();liquidRefractionOverlay.IsVisible(false);
+        glassRoot.Children().InsertAtTop(liquidRefractionOverlay);
         // The real host backdrop supplies the material color and blur. Keep
         // its tint to a single veil at the caller's exact opacity; edge light
         // belongs to the thin border rather than another white shell layer.
@@ -310,39 +528,80 @@ struct Host : std::enable_shared_from_this<Host>
         tintBrush.ColorStops().Append(compositor.CreateColorGradientStop(.45f,{0,250,251,252}));
         tintBrush.ColorStops().Append(compositor.CreateColorGradientStop(1,{0,246,248,250}));
         solidTintBrush=compositor.CreateColorBrush();solidBorderBrush=compositor.CreateColorBrush();
-        tint=compositor.CreateSpriteVisual();tint.Brush(tintBrush);root.Children().InsertAtTop(tint);
-        grain=compositor.CreateSpriteVisual();root.Children().InsertAtTop(grain);
+        tint=compositor.CreateSpriteVisual();tint.Brush(tintBrush);glassRoot.Children().InsertAtTop(tint);
+        grain=compositor.CreateSpriteVisual();glassRoot.Children().InsertAtTop(grain);
+        // One optical edge for BOTH backdrop modes. No bitmap, extra blur,
+        // capture or idle animation: only retained compositor geometry. The
+        // center is empty, so material light cannot wash out content.
+        auto edgeBrush=[&](std::initializer_list<std::pair<float,winrt::Windows::UI::Color>> stops)
+        {
+            auto brush=compositor.CreateLinearGradientBrush();brush.MappingMode(CompositionMappingMode::Absolute);
+            brush.StartPoint({0,0});brush.EndPoint({1,1});
+            for(auto const& stop:stops)brush.ColorStops().Append(compositor.CreateColorGradientStop(stop.first,stop.second));
+            return brush;
+        };
+        bevel=compositor.CreateShapeVisual();
+        shoulderGeometry=compositor.CreateRoundedRectangleGeometry();shoulderShape=compositor.CreateSpriteShape(shoulderGeometry);
+        shoulderBrush=edgeBrush({{0,{38,255,255,255}},{.32f,{10,255,255,255}},{.52f,{0,255,255,255}},{1,{12,36,43,52}}});
+        shoulderShape.StrokeBrush(shoulderBrush);bevel.Shapes().Append(shoulderShape);
+        meniscusGeometry=compositor.CreateRoundedRectangleGeometry();meniscusShape=compositor.CreateSpriteShape(meniscusGeometry);
+        meniscusBrush=edgeBrush({{0,{12,36,43,52}},{.42f,{0,36,43,52}},{.68f,{0,255,255,255}},{1,{34,255,255,255}}});
+        meniscusShape.StrokeBrush(meniscusBrush);bevel.Shapes().Append(meniscusShape);
+        root.Children().InsertAtTop(bevel);
+        opticalLight=compositor.CreateSpriteVisual();opticalLight.IsVisible(false);root.Children().InsertAtTop(opticalLight);
         border=compositor.CreateShapeVisual();borderGeometry=compositor.CreateRoundedRectangleGeometry();borderShape=compositor.CreateSpriteShape(borderGeometry);
-        borderBrush=compositor.CreateLinearGradientBrush();borderBrush.MappingMode(CompositionMappingMode::Relative);
-        borderBrush.StartPoint({0,0});borderBrush.EndPoint({0,1});
-        borderBrush.ColorStops().Append(compositor.CreateColorGradientStop(0,{88,255,255,255}));
-        borderBrush.ColorStops().Append(compositor.CreateColorGradientStop(.24f,{24,255,255,255}));
-        borderBrush.ColorStops().Append(compositor.CreateColorGradientStop(1,{14,47,54,65}));
+        borderBrush=edgeBrush({{0,{148,255,255,255}},{.22f,{64,255,255,255}},{.5f,{20,255,255,255}},{.72f,{18,36,43,52}},{1,{40,36,43,52}}});
         borderShape.StrokeBrush(borderBrush);border.Shapes().Append(borderShape);root.Children().InsertAtTop(border);
         content=compositor.CreateContainerVisual();root.Children().InsertAtTop(content);
-        try{CreateGraphics();CreateGrain();}catch(...){fallback=true;}
+        try{CreateGraphics();if(materialBackend==1)CreateGrain();}catch(...){if(materialBackend==2)throw;fallback=true;}
         shadow=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_TRANSPARENT|WS_EX_LAYERED,
             ShadowClass,L"GlassDesk Shadow",WS_POPUP,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),this);
         check_bool(shadow!=nullptr);
-        if(d3d&&graphics)liquid=std::make_unique<LiquidGlass>(window,shadow,d3d.get(),d3dContext.get(),graphics);
+        if(d3d&&graphics&&(materialBackend==1))liquid=std::make_unique<LiquidGlass>(window,shadow,d3d.get(),d3dContext.get(),graphics);
         provider=MakeElement(accessibility,0,true);
         {std::lock_guard lock(accessibility->mutex);accessibility->hwnd=hwnd;accessibility->root=static_cast<IRawElementProviderFragment*>(provider.Get());}
-        SetWindowPos(window,nullptr,0,0,int(std::lround(frame.width*Scale())),int(std::lround(frame.height*Scale())),SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOZORDER);
+        check_hresult(PositionHostWindows(0,0,int(std::lround(frame.width*Scale())),int(std::lround(frame.height*Scale())),SWP_NOMOVE));
+        check_hresult(WindowCallResult(SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)));
+        check_hresult(WindowCallResult(SetWindowPos(glassWindow,window,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)));
+        if(ownedFaulted&&(materialBackend==2))throw_hresult(E_ABORT);
         Layout();UpdateAccessibleGeometry();
+        if(authorizedIncidentShortTest)check_bool(SetTimer(window,89,authorizedIncidentShortTest?100:500,nullptr)!=0);
+        if(authorizedIncidentShortTest)check_bool(SetTimer(window,AuthorizedShortTestTimer,60000,nullptr)!=0);
     }
     void ApplyMaterial()
     {
-        if(!tint)return;
-        bool solid=frame.solid||fallback;
+        if(!tint||ownedFaulted&&(materialBackend==2))return;
+        if(materialBackend!=1){
+            bool active=materialBackend==2&&!ownedFaulted&&ownedImageSet&&ownedEligible&&liquidEnabled&&!frame.solid&&ownedSurface!=nullptr;
+            glass.IsVisible(active);clearEdge.IsVisible(false);liquidOverlay.IsVisible(false);
+            bevel.IsVisible(false);opticalLight.IsVisible(false);grain.IsVisible(false);border.IsVisible(false);
+            auto windowColor=frame.solid?GetSysColor(COLOR_WINDOW):RGB(245,246,248);
+            solidTintBrush.Color({255,GetRValue(windowColor),GetGValue(windowColor),GetBValue(windowColor)});tint.Brush(solidTintBrush);tint.IsVisible(!active);
+            if(frame.solid){auto edge=GetSysColor(COLOR_WINDOWFRAME);solidBorderBrush.Color({255,GetRValue(edge),GetGValue(edge),GetBValue(edge)});borderShape.StrokeBrush(solidBorderBrush);border.IsVisible(true);}
+            return;
+        }
+        // Do not replace the legacy backdrop until a frame has actually been
+        // presented and its swap chain is attached to the Composition visual.
+        // Merely constructing the capture object can precede borderless access
+        // and the first WGC frame by several timer ticks.
+        bool captureActive=liquidCaptureCandidate&&liquidEnabled&&liquidCapture!=nullptr&&
+            liquidCapturePresented&&attachedLiquidSwapChain!=nullptr&&
+            SUCCEEDED(liquidCaptureFailure)&&!liquidCaptureFuseTripped&&visible&&!frame.solid;
+        bool solid=(frame.solid||fallback)&&!captureActive;
         bool grainVisible=!solid&&grainSurface!=nullptr;
-        if(!materialApplied||solid!=materialSolid)
+        if(!materialApplied||solid!=materialSolid||captureActive!=materialLiquidCapture)
         {
-            glass.IsVisible(!solid);
-            liquidOverlay.IsVisible(!solid&&liquidReady);
-            tint.Brush(solid?solidTintBrush.as<CompositionBrush>():tintBrush.as<CompositionBrush>());
+            glass.IsVisible(!solid&&!captureActive&&!liquidPresented);
+            clearEdge.IsVisible(!solid&&!captureActive&&liquidEnabled);
+            bevel.IsVisible(!solid&&!opticalReady);opticalLight.IsVisible(!solid&&opticalReady);
+            liquidOverlay.IsVisible(!solid&&(captureActive||liquidPresented));liquidOverlay.Opacity(captureActive?1.0f:0.0f);
+            liquidRefractionOverlay.IsVisible(!solid&&captureActive);
+            tint.IsVisible(!solid);
+            tint.Brush(solid?solidTintBrush.as<CompositionBrush>():captureActive&&liquidTintCaptureBrush
+                ?liquidTintCaptureBrush.as<CompositionBrush>():tintBrush.as<CompositionBrush>());
             borderShape.StrokeBrush(solid?solidBorderBrush.as<CompositionBrush>():borderBrush.as<CompositionBrush>());
         }
-        if(!materialApplied||grainVisible!=materialGrainVisible)grain.IsVisible(grainVisible);
+        if(!materialApplied||grainVisible!=materialGrainVisible||captureActive!=materialLiquidCapture)grain.IsVisible(grainVisible&&!captureActive);
         if(solid)
         {
             auto rgb=GetSysColor(COLOR_WINDOW);
@@ -368,58 +627,223 @@ struct Host : std::enable_shared_from_this<Host>
             }
             auto blur=std::max(0.0f,frame.blur)*Scale();
             if(blur!=materialBlur)
-            {backdrop.Properties().InsertScalar(L"GlassBlur.BlurAmount",blur);materialBlur=blur;}
+            {backdrop.Properties().InsertScalar(L"GlassBlur.BlurAmount",blur);clearBackdrop.Properties().InsertScalar(L"GlassEdgeBlur.BlurAmount",std::min(frame.blur,2.5f)*Scale());materialBlur=blur;}
         }
-        materialSolid=solid;materialGrainVisible=grainVisible;materialApplied=true;
+        materialSolid=solid;materialGrainVisible=grainVisible;materialLiquidCapture=captureActive;materialApplied=true;
+    }
+    std::vector<GDPoint> TensionContour(float width,float height,float radius,float strain,float inset=0)
+    {
+        std::vector<GDPoint> points;points.reserve(112);
+        constexpr float pi=3.14159265358979323846f;
+        float cornerRadius=std::max(0.0f,radius-inset);
+        float centers[4][2]={{width-inset-cornerRadius,inset+cornerRadius},{width-inset-cornerRadius,height-inset-cornerRadius},{inset+cornerRadius,height-inset-cornerRadius},{inset+cornerRadius,inset+cornerRadius}};
+        auto append=[&](float x,float y){float factor=TensionFactor(y,width,height,Scale(),strain);points.push_back({width*.5f+(x-width*.5f)*factor,y});};
+        for(int corner=0;corner<4;++corner)
+        {
+            float angle=-pi*.5f+corner*pi*.5f;
+            for(int step=0;step<16;++step){float a=angle+pi*.5f*step/16;append(centers[corner][0]+cornerRadius*std::cos(a),centers[corner][1]+cornerRadius*std::sin(a));}
+            float a=angle+pi*.5f;int next=(corner+1)%4;
+            float x=centers[corner][0]+cornerRadius*std::cos(a),y=centers[corner][1]+cornerRadius*std::sin(a);
+            float nx=centers[next][0]+cornerRadius*std::cos(a),ny=centers[next][1]+cornerRadius*std::sin(a);
+            for(int step=0;step<12;++step){float t=step/12.0f;append(x+(nx-x)*t,y+(ny-y)*t);}
+        }
+        return points;
+    }
+    void UpdateClearEdge(float width,float height,float radius,float strain)
+    {
+        if(!geometryFactory)check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,geometryFactory.put()));
+        float inset=std::min({6*Scale(),width*.12f,height*.12f});
+        auto outer=RoundedPolygon(geometryFactory.get(),TensionContour(width,height,radius,strain),.2f*Scale());
+        auto inner=RoundedPolygon(geometryFactory.get(),TensionContour(width,height,radius,strain,inset),.2f*Scale());
+        com_ptr<ID2D1PathGeometry> ring;check_hresult(geometryFactory->CreatePathGeometry(ring.put()));
+        com_ptr<ID2D1GeometrySink> sink;check_hresult(ring->Open(sink.put()));
+        check_hresult(outer->CombineWithGeometry(inner.get(),D2D1_COMBINE_MODE_EXCLUDE,nullptr,sink.get()));check_hresult(sink->Close());
+        auto source=make<RetainedGeometrySource>(ring.as<ID2D1Geometry>());
+        clearEdgeGeometry.Path(CompositionPath(source));
     }
     void Layout()
     {
-        if(!root)return;
-        RECT client{};GetClientRect(window,&client);int width=client.right,height=client.bottom;
-        float scale=Scale(),radius=std::clamp(frame.radius*scale,0.0f,std::min(width,height)/2.0f);
-        if(width!=cachedWidth||height!=cachedHeight||radius!=cachedRadius||dpi!=cachedDpi)
+        if(!root||ownedFaulted&&(materialBackend==2))return;
+        RECT client{};check_hresult(WindowCallResult(GetClientRect(window,&client)));int width=client.right,height=client.bottom;
+        if(false)root.Size({float(width),float(height)});
+        float scale=Scale(),radius=SurfaceRadius(float(width),float(height),frame.radius*scale,EffectiveTension());
+        float strain=EffectiveTension();bool deforming=std::abs(strain)>.0001f;
+        bool enhanced=materialBackend==1&&liquidEnabled&&!frame.solid&&!fallback;
+        if(width!=cachedWidth||height!=cachedHeight||radius!=cachedRadius||dpi!=cachedDpi||strain!=cachedTension||enhanced!=cachedClearEdge)
         {
             auto size=winrt::Windows::Foundation::Numerics::float2{float(width),float(height)};
-            glass.Size(size);liquidOverlay.Size(size);tint.Size(size);grain.Size(size);border.Size(size);
+            glass.Size(size);clearEdge.Size(size);liquidOverlay.Size(size);liquidRefractionOverlay.Size(size);tint.Size(size);grain.Size(size);border.Size(size);bevel.Size(size);opticalLight.Size(size);
             clipGeometry.Size(size);clipGeometry.CornerRadius({radius,radius});
             borderGeometry.Offset({scale*.5f,scale*.5f});borderGeometry.Size({std::max(0.0f,width-scale),std::max(0.0f,height-scale)});
             borderGeometry.CornerRadius({std::max(0.0f,radius-scale*.5f),std::max(0.0f,radius-scale*.5f)});borderShape.StrokeThickness(scale);
+            // All insets scale in DIP and follow the live silhouette. Clamp for
+            // tiny intermediate frames; no negative size/corner can reach DWM.
+            float edgeUnit=std::min(scale,std::min(width,height)/12.0f);
+            auto edgeGeometry=[&](CompositionRoundedRectangleGeometry const& geometry,float inset)
+            {
+                geometry.Offset({inset,inset});geometry.Size({std::max(0.0f,width-inset*2),std::max(0.0f,height-inset*2)});
+                float innerRadius=std::max(0.0f,radius-inset);geometry.CornerRadius({innerRadius,innerRadius});
+            };
+            edgeGeometry(shoulderGeometry,edgeUnit*2.75f);shoulderShape.StrokeThickness(edgeUnit*3.5f);
+            edgeGeometry(meniscusGeometry,edgeUnit*1.3f);meniscusShape.StrokeThickness(edgeUnit*.7f);
+            // Project the same top-left light vector in physical coordinates.
+            // Relative diagonal gradients would rotate as a capsule expands.
+            float extent=(width*.55f+height)/1.3025f;
+            for(auto const& brush:{borderBrush,shoulderBrush,meniscusBrush})brush.EndPoint({extent*.55f,extent});
             content.Size({frame.width,frame.height});content.Scale({scale,scale,1});
             // The visual boundary remains floating point and antialiased.
             // Give it one physical pixel of rounded HWND coverage so integer
             // region quantization does not amputate partially covered pixels.
             // Corners remain outside the HWND region for cross-process input.
-            auto region=CreateRoundRectRgn(-1,-1,width+2,height+2,int(std::ceil(radius*2)),int(std::ceil(radius*2)));
+            HRGN region{};
+            if(deforming)
+            {
+                if(!geometryFactory)check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,geometryFactory.put()));
+                auto points=TensionContour(float(width),float(height),radius,strain);
+                auto source=make<GeometrySource>(geometryFactory.get(),points,.35f*scale);
+                tensionGeometry.Path(CompositionPath(source));root.Clip(compositor.CreateGeometricClip(tensionGeometry));glassRoot.Clip(compositor.CreateGeometricClip(tensionGeometry));
+                std::vector<POINT> polygon;polygon.reserve(points.size());
+                for(auto p:points){float dx=p.x-width*.5f,dy=p.y-height*.5f;float length=std::max(1.0f,std::hypot(dx,dy));polygon.push_back({LONG(std::lround(p.x+dx/length)),LONG(std::lround(p.y+dy/length))});}
+                region=CreatePolygonRgn(polygon.data(),static_cast<int>(polygon.size()),WINDING);
+                HRGN glassRegion=CreatePolygonRgn(polygon.data(),static_cast<int>(polygon.size()),WINDING);
+                if(glassRegion&&!SetWindowRgn(glassWindow,glassRegion,TRUE))DeleteObject(glassRegion);
+            }
+            else
+            {
+                root.Clip(compositor.CreateGeometricClip(clipGeometry));
+                glassRoot.Clip(compositor.CreateGeometricClip(clipGeometry));
+                region=CreateRoundRectRgn(-1,-1,width+2,height+2,int(std::ceil(radius*2)),int(std::ceil(radius*2)));
+                HRGN glassRegion=CreateRoundRectRgn(-1,-1,width+2,height+2,int(std::ceil(radius*2)),int(std::ceil(radius*2)));
+                if(glassRegion&&!SetWindowRgn(glassWindow,glassRegion,TRUE))DeleteObject(glassRegion);
+            }
             if(region&&!SetWindowRgn(window,region,TRUE))DeleteObject(region);
-            cachedWidth=width;cachedHeight=height;cachedRadius=radius;cachedDpi=dpi;
+            cachedWidth=width;cachedHeight=height;cachedRadius=radius;cachedDpi=dpi;cachedTension=strain;cachedClearEdge=enhanced;
+            if(enhanced)UpdateClearEdge(float(width),float(height),radius,strain);
         }
         // DIP animation dimensions may change while rounded physical size is
         // unchanged; the C# visual tree still receives the exact DIP frame.
+        // The owned shader supplies coverage once; a second geometric clip
+        // would multiply antialiasing at its edge. HWND input region remains.
+        if(materialBackend==2){root.Clip(nullptr);glassRoot.Clip(nullptr);}
         content.Size({frame.width,frame.height});ApplyMaterial();UpdateShadow();UpdateLiquid();
+    }
+    void StopLiquidCapture() noexcept
+    {
+        if(window)KillTimer(window,LiquidCaptureTimer);
+        try{if(liquidOverlay){liquidOverlay.StopAnimation(L"Opacity");liquidOverlay.IsVisible(false);liquidOverlay.Opacity(0);liquidOverlay.Brush(nullptr);}}
+        catch(...){}
+        try{if(liquidRefractionOverlay){liquidRefractionOverlay.IsVisible(false);liquidRefractionOverlay.Brush(nullptr);}}
+        catch(...){}
+        try{if(tint&&tintBrush)tint.Brush(tintBrush);}
+        catch(...){}
+        liquidCaptureSurface=nullptr;liquidRefractionSurface=nullptr;liquidTintSurface=nullptr;liquidInkSurface=nullptr;
+        liquidCaptureBrush=nullptr;liquidRefractionBrush=nullptr;liquidTintCaptureBrush=nullptr;
+        attachedLiquidSwapChain=nullptr;attachedLiquidRefractionSwapChain=nullptr;attachedLiquidTintSwapChain=nullptr;attachedLiquidInkSwapChain=nullptr;
+        ++liquidInkSurfaceGeneration;liquidCapturePresented=false;
+        if(liquidCapture)liquidCapture->SetEnabled(false);
+        liquidCapture.reset();
+    }
+    void AttachLiquidSwapChains(IDXGISwapChain1* baseSwapChain,IDXGISwapChain1* refractionSwapChain,
+                                IDXGISwapChain1* tintSwapChain,IDXGISwapChain1* inkSwapChain)
+    {
+        if(!baseSwapChain||!refractionSwapChain||!tintSwapChain||!inkSwapChain)return;
+        if(attachedLiquidSwapChain==baseSwapChain&&attachedLiquidRefractionSwapChain==refractionSwapChain&&
+           attachedLiquidTintSwapChain==tintSwapChain&&attachedLiquidInkSwapChain==inkSwapChain)return;
+        auto interop=compositor.as<ABI::Windows::UI::Composition::ICompositorInterop>();
+        auto createSurface=[&](IDXGISwapChain1* swapChain)
+        {
+            com_ptr<ABI::Windows::UI::Composition::ICompositionSurface> nativeSurface;
+            check_hresult(interop->CreateCompositionSurfaceForSwapChain(swapChain,nativeSurface.put()));
+            ICompositionSurface surface{nullptr};copy_from_abi(surface,nativeSurface.get());return surface;
+        };
+        liquidCaptureSurface=createSurface(baseSwapChain);
+        liquidRefractionSurface=createSurface(refractionSwapChain);
+        liquidTintSurface=createSurface(tintSwapChain);
+        liquidInkSurface=createSurface(inkSwapChain);
+        liquidCaptureBrush=compositor.CreateSurfaceBrush(liquidCaptureSurface);liquidCaptureBrush.Stretch(CompositionStretch::Fill);
+        liquidRefractionBrush=compositor.CreateSurfaceBrush(liquidRefractionSurface);liquidRefractionBrush.Stretch(CompositionStretch::Fill);
+        liquidTintCaptureBrush=compositor.CreateSurfaceBrush(liquidTintSurface);liquidTintCaptureBrush.Stretch(CompositionStretch::Fill);
+        liquidOverlay.Brush(liquidCaptureBrush);liquidRefractionOverlay.Brush(liquidRefractionBrush);
+        attachedLiquidSwapChain=baseSwapChain;attachedLiquidRefractionSwapChain=refractionSwapChain;
+        attachedLiquidTintSwapChain=tintSwapChain;attachedLiquidInkSwapChain=inkSwapChain;
+        ++liquidInkSurfaceGeneration;
+    }
+    void UpdateLiquidCapture() noexcept
+    {
+        if(!liquidCaptureCandidate||!window||destroying)return;
+        if(!liquidEnabled)
+        {
+            StopLiquidCapture();liquidCaptureFailure=S_OK;liquidCaptureFuseTripped=false;try{ApplyMaterial();}catch(...){}return;
+        }
+        if(!visible||frame.solid)
+        {StopLiquidCapture();try{ApplyMaterial();}catch(...){}return;}
+        if(FAILED(liquidCaptureFailure)){try{ApplyMaterial();}catch(...){}return;}
+        try
+        {
+            if(!liquidCapture)
+            {
+                if(!d3d||!d3dContext)throw_hresult(E_FAIL);
+                liquidCapture=std::make_unique<liquidglass::LiquidGlassCapture>(glassWindow,window,shadow,true,d3d.get(),d3dContext.get());
+                if(!SetTimer(window,LiquidCaptureTimer,16,nullptr))throw_hresult(HRESULT_FROM_WIN32(GetLastError()));
+            }
+            RECT bounds{};
+            HRESULT boundsResult=DwmGetWindowAttribute(glassWindow,DWMWA_EXTENDED_FRAME_BOUNDS,&bounds,sizeof(bounds));
+            if(FAILED(boundsResult))boundsResult=GetWindowRect(glassWindow,&bounds)?S_OK:HRESULT_FROM_WIN32(GetLastError());
+            check_hresult(boundsResult);
+            const LONG width=std::max<LONG>(0,bounds.right-bounds.left);
+            const LONG height=std::max<LONG>(0,bounds.bottom-bounds.top);
+            liquidglass::CaptureRect rect{};
+            rect.screenX=static_cast<int>(bounds.left);rect.screenY=static_cast<int>(bounds.top);
+            rect.widthPixels=static_cast<int>(width);rect.heightPixels=static_cast<int>(height);
+            rect.radiusPixels=cachedRadius;rect.dpiScale=Scale();
+            const HRESULT update=liquidCapture->Update(rect);
+            if(liquidCapture->FuseTripped()){liquidCaptureFuseTripped=true;throw_hresult(FAILED(update)?update:E_ABORT);}
+            if(FAILED(update))throw_hresult(update);
+            auto* swapChain=static_cast<IDXGISwapChain1*>(liquidCapture->OutputSwapChain());
+            auto* refractionSwapChain=static_cast<IDXGISwapChain1*>(liquidCapture->RefractionSwapChain());
+            auto* tintSwapChain=static_cast<IDXGISwapChain1*>(liquidCapture->TintSwapChain());
+            auto* inkSwapChain=static_cast<IDXGISwapChain1*>(liquidCapture->InkColorSwapChain());
+            if(swapChain&&refractionSwapChain&&tintSwapChain&&inkSwapChain)
+                AttachLiquidSwapChains(swapChain,refractionSwapChain,tintSwapChain,inkSwapChain);
+            liquidCapturePresented=liquidCapture->HasPresentedFrame();
+            if(liquidCapturePresented&&(!swapChain||!refractionSwapChain||!tintSwapChain||!inkSwapChain))throw_hresult(E_POINTER);
+            ApplyMaterial();
+        }
+        catch(...)
+        {
+            liquidCaptureFailure=to_hresult();LogLiquidCaptureFailure(liquidCaptureFailure);StopLiquidCapture();try{ApplyMaterial();}catch(...){}
+        }
     }
     void UpdateLiquid()
     {
-        if(!window||destroying)return;
-        bool shouldRun=liquidEnabled&&visible&&!frame.solid&&!fallback;
-        if(liquid)
+        if(!window||destroying||ownedFaulted&&(materialBackend==2))return;
+        if(materialBackend!=1){KillTimer(window,LiquidTimer);ApplyMaterial();return;}
+        if(liquidCaptureCandidate){UpdateLiquidCapture();return;}
+        // Keep the legacy system-frost fallback capture-free when no capture
+        // candidate was selected for this host.
+        KillTimer(window,LiquidTimer);
+        if(liquid)liquid->SetEnabled(false);
+        liquidOverlay.StopAnimation(L"Opacity");liquidOverlay.IsVisible(false);
+        liquidOverlay.Opacity(0);liquidOverlay.Brush(nullptr);
+        liquidSurface=nullptr;if(liquidBrush)liquidBrush.Surface(nullptr);
+        liquidReady=false;liquidPresented=false;
+        bool materialVisible=visible&&!frame.solid&&!fallback;
+        glass.IsVisible(materialVisible);clearEdge.IsVisible(materialVisible&&liquidEnabled);
+        if(liquid&&materialVisible&&liquidEnabled)
         {
-            liquid->SetEnabled(liquidEnabled);liquid->Suspend(!visible,frame.solid||fallback);
-            if(shouldRun)
+            float radius=cachedRadius;
+            auto light=liquid->OpticalSurface(static_cast<unsigned>(std::max(0,cachedWidth)),static_cast<unsigned>(std::max(0,cachedHeight)),radius,Scale(),EffectiveTension());
+            if(light!=opticalSurface)
             {
-                RECT panel{};GetWindowRect(window,&panel);
-                liquid->Tick(panel,std::min(frame.radius*Scale(),std::min(panel.right-panel.left,panel.bottom-panel.top)/2.0f),frame.blur*Scale());
+                if(!opticalBrush){opticalBrush=compositor.CreateSurfaceBrush();opticalBrush.Stretch(CompositionStretch::None);}
+                opticalBrush.Surface(light);opticalSurface=light;opticalLight.Brush(opticalBrush);
             }
-            bool ready=shouldRun&&liquid->Ready();auto surface=ready?liquid->Surface():CompositionDrawingSurface{nullptr};
-            if(ready&&surface!=liquidSurface)
-            {
-                if(!liquidBrush){liquidBrush=compositor.CreateSurfaceBrush();liquidBrush.Stretch(CompositionStretch::Fill);}
-                liquidBrush.Surface(surface);liquidSurface=surface;
-            }
-            if(ready!=liquidReady){liquidOverlay.Brush(ready?liquidBrush.as<CompositionBrush>():CompositionBrush{nullptr});liquidReady=ready;}
-            liquidOverlay.IsVisible(ready);
-            if(!ready){liquidSurface=nullptr;if(liquidBrush)liquidBrush.Surface(nullptr);}
+            opticalReady=light!=nullptr;
         }
-        if(shouldRun)SetTimer(window,LiquidTimer,34,nullptr);else KillTimer(window,LiquidTimer);
+        opticalLight.IsVisible(materialVisible&&liquidEnabled&&opticalReady);
+        bevel.IsVisible(materialVisible&&std::abs(EffectiveTension())<.0001f&&(!liquidEnabled||!opticalReady));
+        border.IsVisible(std::abs(EffectiveTension())<.0001f);
+        border.Opacity(materialVisible&&liquidEnabled&&opticalReady?.12f:1.0f);
     }
     static float RoundedDistance(float x,float y,float width,float height,float radius)
     {
@@ -427,32 +851,109 @@ struct Host : std::enable_shared_from_this<Host>
         float px=std::max(qx,0.0f),py=std::max(qy,0.0f);
         return std::sqrt(px*px+py*py)+std::min(std::max(qx,qy),0.0f)-radius;
     }
-    void ReleaseShadowBitmap()
+    HRESULT ReleaseShadowBitmap() noexcept
     {
-        if(shadowDc&&previousBitmap)SelectObject(shadowDc,previousBitmap);
-        if(shadowBitmap)DeleteObject(shadowBitmap);if(shadowDc)DeleteDC(shadowDc);
-        shadowDc=nullptr;shadowBitmap=nullptr;previousBitmap=nullptr;shadowBits=nullptr;shadowWidth=shadowHeight=0;
+        HRESULT first=S_OK;
+        auto recordFailure=[&]() noexcept {
+            const DWORD error=GetLastError();
+            if(SUCCEEDED(first))first=HRESULT_FROM_WIN32(error?error:ERROR_GEN_FAILURE);
+        };
+        // Destroy our private DC before its bitmap: successful DeleteDC removes
+        // the selection. If it fails, retain both handles and never delete a
+        // possibly selected bitmap. Still release independent retired objects.
+        if(shadowDc){if(DeleteDC(shadowDc))shadowDc=nullptr;else recordFailure();}
+        if(!shadowDc&&shadowBitmap){
+            if(DeleteObject(shadowBitmap)){shadowBitmap=nullptr;shadowBits=nullptr;}
+            else recordFailure();
+        }
+        if(shadowRetiredBitmap){
+            if(DeleteObject(shadowRetiredBitmap))shadowRetiredBitmap=nullptr;
+            else recordFailure();
+        }
+        if(!shadowDc&&!shadowBitmap&&!shadowRetiredBitmap){
+            shadowBits=nullptr;shadowWidth=shadowHeight=0;
+            shadowCapacityWidth=shadowCapacityHeight=0;shadowOpticalProfile=false;
+        }
+        return first;
     }
-    void UpdateShadow()
+    void UpdateOpticalShadow(RECT const& rectangle,int panelWidth,int panelHeight,bool forceOrder)
     {
-        if(!shadow||destroying)return;
+        // App-generated black alpha only. This DIB never receives desktop pixels.
+        // A failed retirement is a first fault, never another allocation/retry.
+        if(shadowRetiredBitmap)throw hresult_error(E_UNEXPECTED);
+        auto scale=Scale();auto tension=EffectiveTension();
+        gd::shadow::RasterProfile profile{};
+        check_bool(gd::shadow::MakeRasterProfile(panelWidth/scale,panelHeight/scale,scale,profile));
+        int margin=int(profile.marginPixels),width=panelWidth+2*margin,height=panelHeight+2*margin;
+        float radius=SurfaceRadius(float(panelWidth),float(panelHeight),frame.radius*scale,tension);
+        bool repaint=!shadowOpticalProfile||width!=shadowWidth||height!=shadowHeight
+            ||radius!=shadowRadius||dpi!=shadowDpi||tension!=shadowTension;
+        int positionX=rectangle.left-margin,positionY=rectangle.top-margin;
+        bool moved=positionX!=shadowX||positionY!=shadowY;
+        if(!forceOrder&&!repaint&&!moved&&visible==shadowShown)return;
+
+        gd::shadow::CapacityPlan plan{};
+        check_bool(gd::shadow::PlanCapacity({shadowCapacityWidth,shadowCapacityHeight},unsigned(width),unsigned(height),plan));
+        if(plan.reallocate)
+        {
+            if(!shadowDc){shadowDc=CreateCompatibleDC(nullptr);check_bool(shadowDc!=nullptr);}
+            BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth=LONG(plan.capacity.width);info.bmiHeader.biHeight=-LONG(plan.capacity.height);
+            info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+            void* nextBits{};auto next=CreateDIBSection(shadowDc,&info,DIB_RGB_COLORS,&nextBits,nullptr,0);
+            check_bool(next!=nullptr);
+            auto replaced=SelectObject(shadowDc,next);
+            if(!replaced||replaced==HGDI_ERROR){
+                if(!DeleteObject(next))shadowRetiredBitmap=next;
+                throw hresult_error(E_FAIL,L"Shadow bitmap selection failed");
+            }
+            const auto retired=shadowBitmap;
+            // Publish ownership before any fallible retirement. The old bitmap
+            // is now detached; retain its handle if deletion fails for teardown.
+            shadowBitmap=next;shadowBits=nextBits;
+            shadowCapacityWidth=plan.capacity.width;shadowCapacityHeight=plan.capacity.height;
+            if(retired&&!DeleteObject(retired)){
+                const DWORD error=GetLastError();shadowRetiredBitmap=retired;
+                throw hresult_error(HRESULT_FROM_WIN32(error?error:ERROR_GEN_FAILURE));
+            }
+            repaint=true;
+        }
+        if(repaint)
+        {
+            check_bool(gd::shadow::RasterAlpha(static_cast<unsigned*>(shadowBits),shadowCapacityWidth,shadowCapacityHeight,
+                unsigned(width),unsigned(height),unsigned(panelWidth),unsigned(panelHeight),profile,radius,scale,tension));
+        }
+        POINT position{positionX,positionY},source{};SIZE size{width,height};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+        if(repaint)check_bool(UpdateLayeredWindow(shadow,nullptr,&position,&size,shadowDc,&source,0,&blend,ULW_ALPHA)!=FALSE);
+        if(ownedFaulted||destroying)return;
+        check_bool(SetWindowPos(shadow,glassWindow?glassWindow:window,position.x,position.y,width,height,SWP_NOACTIVATE|(visible?SWP_SHOWWINDOW:SWP_HIDEWINDOW))!=FALSE);
+        if(ownedFaulted||destroying)return;
+        shadowWidth=width;shadowHeight=height;shadowRadius=radius;shadowDpi=dpi;shadowTension=tension;
+        shadowX=positionX;shadowY=positionY;shadowShown=visible;shadowOpticalProfile=true;
+    }
+    void UpdateShadow(bool forceOrder=false)
+    {
+        if(!shadow||destroying||ownedFaulted&&(materialBackend==2))return;
         RECT rectangle{};GetWindowRect(window,&rectangle);
         int panelWidth=rectangle.right-rectangle.left,panelHeight=rectangle.bottom-rectangle.top;
         if(panelWidth<1||panelHeight<1)return;
         auto scale=Scale();int margin=int(std::ceil(24*scale));
         int width=panelWidth+margin*2,height=panelHeight+margin*2;
-        float radius=std::min(frame.radius*scale,std::min(panelWidth,panelHeight)/2.0f);
-        bool repaint=width!=shadowWidth||height!=shadowHeight||radius!=shadowRadius||dpi!=shadowDpi;
+        float radius=SurfaceRadius(float(panelWidth),float(panelHeight),frame.radius*scale,EffectiveTension());
+        bool repaint=shadowOpticalProfile||width!=shadowWidth||height!=shadowHeight||radius!=shadowRadius||dpi!=shadowDpi||EffectiveTension()!=shadowTension;
         int positionX=rectangle.left-margin,positionY=rectangle.top-margin;
         bool moved=positionX!=shadowX||positionY!=shadowY;
-        if(!repaint&&!moved&&visible==shadowShown)return;
-        if(width!=shadowWidth||height!=shadowHeight)
+        if(!forceOrder&&!repaint&&!moved&&visible==shadowShown)return;
+        if(shadowOpticalProfile||width!=shadowWidth||height!=shadowHeight)
         {
-            ReleaseShadowBitmap();shadowDc=CreateCompatibleDC(nullptr);check_bool(shadowDc!=nullptr);
+            check_hresult(ReleaseShadowBitmap());shadowDc=CreateCompatibleDC(nullptr);check_bool(shadowDc!=nullptr);
             BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;
             info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
             shadowBitmap=CreateDIBSection(shadowDc,&info,DIB_RGB_COLORS,&shadowBits,nullptr,0);check_bool(shadowBitmap!=nullptr);
-            previousBitmap=SelectObject(shadowDc,shadowBitmap);shadowWidth=width;shadowHeight=height;
+            auto replaced=SelectObject(shadowDc,shadowBitmap);
+            if(!replaced||replaced==HGDI_ERROR)throw hresult_error(E_FAIL,L"Shadow bitmap selection failed");
+            shadowWidth=width;shadowHeight=height;
+            shadowCapacityWidth=unsigned(width);shadowCapacityHeight=unsigned(height);
         }
         if(repaint)
         {
@@ -461,16 +962,17 @@ struct Host : std::enable_shared_from_this<Host>
             for(int y=0;y<height;++y)for(int x=0;x<width;++x)
             {
                 float localX=x-margin+.5f,localY=y-margin+.5f;
-                if(RoundedDistance(localX,localY,float(panelWidth),float(panelHeight),radius)<=0)continue;
-                float distance=std::max(0.0f,RoundedDistance(localX,localY-offset,float(panelWidth),float(panelHeight),radius));
+                if(SurfaceDistance(localX,localY,float(panelWidth),float(panelHeight),radius,scale,EffectiveTension())<=0)continue;
+                float distance=std::max(0.0f,SurfaceDistance(localX,localY-offset,float(panelWidth),float(panelHeight),radius,scale,EffectiveTension()));
                 auto alpha=static_cast<unsigned>(std::lround(24*std::exp(-distance*distance/(2*sigma*sigma))));
                 pixels[size_t(y)*width+x]=alpha<<24; // Premultiplied black, with a transparent center.
             }
-            shadowRadius=radius;shadowDpi=dpi;
+            shadowRadius=radius;shadowDpi=dpi;shadowTension=EffectiveTension();
+            shadowOpticalProfile=false;
         }
         POINT position{positionX,positionY},source{};SIZE size{width,height};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
         if(repaint)check_bool(UpdateLayeredWindow(shadow,nullptr,&position,&size,shadowDc,&source,0,&blend,ULW_ALPHA)!=FALSE);
-        SetWindowPos(shadow,window,position.x,position.y,width,height,SWP_NOACTIVATE|(visible?SWP_SHOWWINDOW:SWP_HIDEWINDOW));
+        check_bool(SetWindowPos(shadow,glassWindow?glassWindow:window,position.x,position.y,width,height,SWP_NOACTIVATE|(visible?SWP_SHOWWINDOW:SWP_HIDEWINDOW))!=FALSE);
         shadowX=positionX;shadowY=positionY;shadowShown=visible;
     }
     com_ptr<ID2D1Bitmap1> Decode(GDOp const& op)
@@ -594,7 +1096,8 @@ struct Host : std::enable_shared_from_this<Host>
                         else context->DrawBitmap(bitmap.get(),rect,1,D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,&source);
                     }
                 }
-                catch(...){/* An unreadable artwork does not invalidate the text surface. */}
+                catch(hresult_error const& error){if(PropagateArtworkFailure(materialBackend,error.code()))throw;}
+                catch(...){if(materialBackend==2)throw;/* Legacy input fallback. */}
                 break;
             case 4:context->DrawLine({op.x,op.y},{op.x+op.width,op.y+op.height},brush.get(),std::max(.5f,op.radius));break;
             case 5:context->FillEllipse({{op.x+op.width/2,op.y+op.height/2},op.width/2,op.height/2},brush.get());break;
@@ -633,15 +1136,17 @@ struct Host : std::enable_shared_from_this<Host>
         {
             try
             {
-                if(!graphics){CreateGraphics();CreateGrain();}
+                if(ownedFaulted)throw hresult_error(E_ABORT);
+                if(!graphics){CreateGraphics();if(materialBackend==1)CreateGrain();}
                 auto surface=CreateSurface(int(std::ceil(width*Scale())),int(std::ceil(height*Scale())));
                 Draw(surface,float(dpi),[&](auto context){Paint(context,operations,count);});return surface;
             }
             catch(hresult_error const& error)
             {
+                if(materialBackend==2){TripOwned(error.code());throw;}
                 if(attempt||!DeviceLost(error.code()))throw;
-                fallback=true;ApplyMaterial();
-                CreateGraphics();CreateGrain();fallback=false;ApplyMaterial();
+                fallback=true;UpdateAccessibleGeometry();ApplyMaterial();
+                CreateGraphics();CreateGrain();fallback=false;UpdateAccessibleGeometry();ApplyMaterial();
                 PostMessageW(window,RecoveredMessage,0,0); // C# recreates its content after this call has returned.
             }
         }
@@ -655,43 +1160,67 @@ struct Host : std::enable_shared_from_this<Host>
         {
             try
             {
-                if(!graphics){CreateGraphics();CreateGrain();}
+                if(ownedFaulted)throw hresult_error(E_ABORT);
+                if(!graphics){CreateGraphics();if(materialBackend==1)CreateGrain();}
                 auto surface=CreateSurface(int(std::ceil(width*Scale())),int(std::ceil(height*Scale())));
                 Draw(surface,float(dpi),[&](auto context){PaintV2(context,operations,count);});return surface;
             }
             catch(hresult_error const& error)
             {
+                if(materialBackend==2){TripOwned(error.code());throw;}
                 if(attempt||!DeviceLost(error.code()))throw;
-                fallback=true;ApplyMaterial();CreateGraphics();CreateGrain();fallback=false;ApplyMaterial();
+                fallback=true;UpdateAccessibleGeometry();ApplyMaterial();CreateGraphics();CreateGrain();
+                fallback=false;UpdateAccessibleGeometry();ApplyMaterial();
                 PostMessageW(window,RecoveredMessage,0,0);
             }
         }
         throw hresult_error(E_FAIL);
     }
-    void Shutdown()noexcept
+    HRESULT Shutdown()noexcept
     {
-        if(destroying)return;destroying=true;callback=nullptr;
+        if(destroying)return shutdownResult;destroying=true;callback=nullptr;
+        cleanup::Result result(shutdownResult);
+        auto attempt=[&](auto&& operation) noexcept {
+            result.Attempt(operation,[]() noexcept {return to_hresult();});
+        };
+        auto recordWin32Failure=[&]() noexcept {
+            const DWORD error=GetLastError();
+            result.Record(HRESULT_FROM_WIN32(error==ERROR_SUCCESS?ERROR_GEN_FAILURE:error));
+        };
         if(window)KillTimer(window,DpiTimer);
         if(window)KillTimer(window,LiquidTimer);
-        liquid.reset();liquidSurface=nullptr;liquidBrush=nullptr;
-        if(captured&&GetCapture()==window)ReleaseCapture();captured=false;
-        {std::lock_guard lock(accessibility->mutex);accessibility->hwnd=nullptr;accessibility->root=nullptr;accessibility->visible=false;accessibility->items.clear();}
-        if(provider)UiaDisconnectProvider(provider.Get());provider.Reset();
+        if(window)KillTimer(window,LiquidCaptureTimer);
+        if(window)KillTimer(window,AuthorizedShortTestTimer);
+        if(window)KillTimer(window,89);
+        StopLiquidCapture();
+        attempt([&]{if(opticalLight)opticalLight.Brush(nullptr);if(opticalBrush)opticalBrush.Surface(nullptr);});
+        opticalSurface=nullptr;
+        if(liquid)result.Record(liquid->Close());liquid.reset();liquidSurface=nullptr;liquidBrush=nullptr;
+        if(captured&&GetCapture()==window&&!ReleaseCapture())recordWin32Failure();captured=false;
+        result.Record(DisconnectAccessibleProvider(accessibility,provider.Get(),
+            [](IRawElementProviderSimple* value) noexcept {return UiaDisconnectProvider(value);}));
+        provider.Reset();
         // Invalidate the HWND under the same lock used by UIA posting before
         // draining requests; no other COM thread can post another allocation.
         MSG message{};
         if(window)while(PeekMessageW(&message,window,RangeMessage,RangeMessage,PM_REMOVE))delete reinterpret_cast<RangeRequest*>(message.lParam);
-        if(IsWindow(shadow))DestroyWindow(shadow);shadow=nullptr;ReleaseShadowBitmap();
-        if(IsWindow(window))DestroyWindow(window);window=nullptr;
-        try{if(target)target.Root(nullptr);}catch(...){}
-        try{if(root)root.Children().RemoveAll();}catch(...){}
+        if(IsWindow(shadow)&&!DestroyWindow(shadow))recordWin32Failure();shadow=nullptr;result.Record(ReleaseShadowBitmap());
+        attempt([&]{if(target)target.Root(nullptr);if(glassTarget)glassTarget.Root(nullptr);});
+        if(IsWindow(window)&&!DestroyWindow(window))recordWin32Failure();window=nullptr;
+        if(IsWindow(glassWindow)&&!DestroyWindow(glassWindow))recordWin32Failure();glassWindow=nullptr;
+        attempt([&]{if(root)root.Children().RemoveAll();});
+        attempt([&]{if(glassRoot)glassRoot.Children().RemoveAll();});
+        ownedRenderer.reset();ownedSurface=nullptr;ownedBrush=nullptr;
         images.clear();grainSurface=nullptr;graphics=nullptr;
-        content=nullptr;glass=nullptr;liquidOverlay=nullptr;tint=nullptr;grain=nullptr;border=nullptr;borderGeometry=nullptr;borderShape=nullptr;clipGeometry=nullptr;
-        tintBrush=nullptr;borderBrush=nullptr;solidTintBrush=nullptr;solidBorderBrush=nullptr;
-        backdrop=nullptr;root=nullptr;target=nullptr;
-        try{if(compositor)compositor.Close();}catch(...){}
+        opticalSurface=nullptr;opticalBrush=nullptr;opticalLight=nullptr;
+        content=nullptr;clearEdge=nullptr;clearBackdrop=nullptr;clearEdgeGeometry=nullptr;glass=nullptr;liquidOverlay=nullptr;liquidRefractionOverlay=nullptr;tint=nullptr;grain=nullptr;border=nullptr;bevel=nullptr;
+        borderGeometry=nullptr;borderShape=nullptr;shoulderShape=nullptr;meniscusShape=nullptr;shoulderGeometry=nullptr;meniscusGeometry=nullptr;clipGeometry=nullptr;tensionGeometry=nullptr;
+        tintBrush=nullptr;borderBrush=nullptr;shoulderBrush=nullptr;meniscusBrush=nullptr;solidTintBrush=nullptr;solidBorderBrush=nullptr;
+        backdrop=nullptr;root=nullptr;glassRoot=nullptr;target=nullptr;glassTarget=nullptr;
+        attempt([&]{if(compositor)compositor.Close();});
         compositor=nullptr;
         typographyEngine.reset();cacheContext=nullptr;wic=nullptr;textFactory=nullptr;d2d=nullptr;d2dFactory=nullptr;geometryFactory=nullptr;d3dContext=nullptr;d3d=nullptr;
+        bool sawQuit=false;WPARAM quitCode=0;
         try
         {
             if(queue)
@@ -699,12 +1228,28 @@ struct Host : std::enable_shared_from_this<Host>
                 auto shutdown=queue.ShutdownQueueAsync();auto deadline=GetTickCount64()+2000;
                 while(shutdown.Status()==winrt::Windows::Foundation::AsyncStatus::Started&&GetTickCount64()<deadline)
                 {
-                    while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
-                    MsgWaitForMultipleObjectsEx(0,nullptr,10,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+                    for(unsigned batch=0;batch<256&&GetTickCount64()<deadline&&PeekMessageW(&message,nullptr,0,0,PM_REMOVE);++batch){if(message.message==WM_QUIT){sawQuit=true;quitCode=message.wParam;break;}TranslateMessage(&message);DispatchMessageW(&message);}
+                    if(MsgWaitForMultipleObjectsEx(0,nullptr,10,QS_ALLINPUT,MWMO_INPUTAVAILABLE)==WAIT_FAILED){recordWin32Failure();break;}
+                }
+                using winrt::Windows::Foundation::AsyncStatus;
+                switch(shutdown.Status()){
+                case AsyncStatus::Completed:
+                    shutdown.GetResults();
+                    result.RecordAsync(cleanup::AsyncOutcome::completed);break;
+                case AsyncStatus::Started:
+                    result.RecordAsync(cleanup::AsyncOutcome::pending);break;
+                case AsyncStatus::Canceled:
+                    result.RecordAsync(cleanup::AsyncOutcome::canceled);break;
+                case AsyncStatus::Error:
+                    result.RecordAsync(cleanup::AsyncOutcome::error,shutdown.ErrorCode());break;
                 }
             }
-        }catch(...){}
+        }catch(...){result.Record(to_hresult());}
+
         queue=nullptr;
+        if(systemSourceSingleton){if(!CloseHandle(systemSourceSingleton))recordWin32Failure();systemSourceSingleton=nullptr;}
+        if(sawQuit)PostQuitMessage(static_cast<int>(quitCode));
+        shutdownResult=result.Value();return shutdownResult;
     }
 };
 using HostRef=std::shared_ptr<Host>;
@@ -725,6 +1270,13 @@ LRESULT CALLBACK ShadowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
     if(message==WM_ERASEBKGND)return 1;
     return DefWindowProcW(hwnd,message,wp,lp);
 }
+LRESULT CALLBACK GlassWindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(message==WM_NCHITTEST)return HTTRANSPARENT;
+    if(message==WM_MOUSEACTIVATE)return MA_NOACTIVATE;
+    if(message==WM_ERASEBKGND)return 1;
+    return DefWindowProcW(hwnd,message,wp,lp);
+}
 LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
     auto host=reinterpret_cast<Host*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
@@ -738,10 +1290,34 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
     {
         switch(message)
         {
+        case WM_WINDOWPOSCHANGING:
+            if(!host->destroying){
+                auto placement=reinterpret_cast<WINDOWPOS*>(lp);RECT bounds{};
+                if(GetWindowRect(hwnd,&bounds)){
+                    int width=(placement->flags&SWP_NOSIZE)?bounds.right-bounds.left:placement->cx;
+                    int height=(placement->flags&SWP_NOSIZE)?bounds.bottom-bounds.top:placement->cy;
+                    int x=(placement->flags&SWP_NOMOVE)?bounds.left:placement->x;
+                    int y=(placement->flags&SWP_NOMOVE)?bounds.top:placement->y;
+                    int clampedX=x,clampedY=y;
+                    if(desktopviewport::ClampDesktopPlacement(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),
+                        GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN),width,height,clampedX,clampedY)&&
+                        (clampedX!=x||clampedY!=y)){
+                        placement->x=clampedX;placement->y=clampedY;placement->flags&=~SWP_NOMOVE;
+                    }
+                }
+                return 0;
+            }break;
         case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
         case WM_ERASEBKGND:return 1;
         case WM_SIZE:host->Layout();host->UpdateAccessibleGeometry();host->Emit(ContextEvent);return 0;
-        case WM_WINDOWPOSCHANGED:host->UpdateShadow();host->UpdateLiquid();host->UpdateAccessibleGeometry();host->Emit(ContextEvent);break;
+        case WM_WINDOWPOSCHANGED:
+            if(!(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_TOPMOST))host->EnsureTopmost();
+        {
+            auto const& placement=*reinterpret_cast<WINDOWPOS*>(lp);
+            host->SyncGlassWindowBounds();
+            host->UpdateShadow((placement.flags&SWP_NOZORDER)==0);
+            host->UpdateLiquid();host->UpdateAccessibleGeometry();host->Emit(ContextEvent);break;
+        }
         case WM_DPICHANGED:
         {auto rectangle=reinterpret_cast<RECT*>(lp);host->ApplyDpi(LOWORD(wp),rectangle->left,rectangle->top);return 0;}
         case WM_SETTINGCHANGE:
@@ -750,22 +1326,44 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         case WM_DISPLAYCHANGE:host->ReconcileDpi();SetTimer(hwnd,DpiTimer,300,nullptr);host->Emit(10);break;
         case WM_TIMER:
             if(wp==DpiTimer){KillTimer(hwnd,DpiTimer);host->ReconcileDpi();return 0;}
-            if(wp==LiquidTimer){host->UpdateLiquid();return 0;}break;
+            if(wp==LiquidTimer){host->UpdateLiquid();return 0;}
+            if(wp==LiquidCaptureTimer){host->UpdateLiquidCapture();return 0;}
+            if(wp==AuthorizedShortTestTimer){KillTimer(hwnd,AuthorizedShortTestTimer);host->Emit(14);return 0;}break;
         case WM_POWERBROADCAST:if(wp==PBT_APMRESUMEAUTOMATIC||wp==PBT_APMRESUMESUSPEND){host->ReconcileDpi();host->Emit(11);}break;
         case WM_MOUSEMOVE:
         {
             if(!host->visible)return 0;
-            bool inside=host->Inside(GET_X_LPARAM(lp)/host->Scale(),GET_Y_LPARAM(lp)/host->Scale());
-            if(inside&&!host->tracking){host->tracking=true;TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,hwnd,0};TrackMouseEvent(&track);host->EmitPointer(1,lp);}
-            else if(!inside&&host->tracking){host->tracking=false;host->EmitPointer(2,lp);}
-            host->EmitPointer(3,lp);return 0;
+            const float x=GET_X_LPARAM(lp)/host->Scale(),y=GET_Y_LPARAM(lp)/host->Scale();
+            const bool inside=host->Inside(x,y);
+            if(inside&&!host->tracking){host->tracking=true;TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,hwnd,0};TrackMouseEvent(&track);host->EmitPointer(1,lp,inside);}
+            else if(!inside&&host->tracking){host->tracking=false;host->EmitPointer(2,lp,inside);}
+            host->EmitPointer(3,lp,inside);return 0;
         }
-        case WM_MOUSELEAVE:if(host->tracking){host->tracking=false;host->Emit(2);}return 0;
-        case WM_LBUTTONDOWN:if(!host->visible)return 0;host->captured=true;SetCapture(hwnd);host->EmitPointer(4,lp);return 0;
-        case WM_LBUTTONUP:if(!host->visible)return 0;host->EmitPointer(5,lp);host->captured=false;if(GetCapture()==hwnd)ReleaseCapture();return 0;
+        case WM_MOUSELEAVE:if(host->tracking){host->tracking=false;host->Emit(2,0,0,0,0,input::kOutsideSurfaceControlId);}return 0;
+        case WM_LBUTTONDOWN:
+        {
+            if(!host->visible)return 0;
+            const bool inside=host->Inside(GET_X_LPARAM(lp)/host->Scale(),GET_Y_LPARAM(lp)/host->Scale());
+            if(!inside)return 0;
+            host->captured=true;SetCapture(hwnd);host->EmitPointer(4,lp,inside);return 0;
+        }
+        case WM_LBUTTONUP:
+        {
+            if(!host->visible)return 0;
+            const bool inside=host->Inside(GET_X_LPARAM(lp)/host->Scale(),GET_Y_LPARAM(lp)/host->Scale());
+            host->EmitPointer(5,lp,inside);host->captured=false;if(GetCapture()==hwnd)ReleaseCapture();return 0;
+        }
         case WM_CAPTURECHANGED:if(host->captured){host->captured=false;host->Emit(15);}return 0;
         case WM_MOUSEWHEEL:
-        {if(!host->visible)return 0;POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};ScreenToClient(hwnd,&point);host->Emit(6,point.x/host->Scale(),point.y/host->Scale(),GET_X_LPARAM(lp),GET_Y_LPARAM(lp),host->Hit(point.x/host->Scale(),point.y/host->Scale()),double(GET_WHEEL_DELTA_WPARAM(wp))/WHEEL_DELTA);return 0;}
+        {
+            if(!host->visible)return 0;
+            POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};ScreenToClient(hwnd,&point);
+            const float x=point.x/host->Scale(),y=point.y/host->Scale();
+            const bool inside=host->Inside(x,y);
+            const int control=inside?host->Hit(x,y):0;
+            host->Emit(6,x,y,GET_X_LPARAM(lp),GET_Y_LPARAM(lp),input::ControlIdForSurface(inside,control),
+                double(GET_WHEEL_DELTA_WPARAM(wp))/WHEEL_DELTA);return 0;
+        }
         case WM_SETCURSOR:if(LOWORD(lp)==HTCLIENT){SetCursor(LoadCursor(nullptr,IDC_ARROW));return TRUE;}break;
         case WM_NCHITTEST:
         {
@@ -773,7 +1371,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
             return host->Inside(point.x/host->Scale(),point.y/host->Scale())?HTCLIENT:HTTRANSPARENT;
         }
         case WM_GETOBJECT:
-            if(static_cast<LONG>(lp)==UiaRootObjectId&&host->provider)return UiaReturnRawElementProvider(hwnd,wp,lp,host->provider.Get());break;
+            if(!host->destroying&&static_cast<LONG>(lp)==UiaRootObjectId&&host->provider)return UiaReturnRawElementProvider(hwnd,wp,lp,host->provider.Get());break;
         case InvokeMessage:
         {
             bool enabled=false;{std::lock_guard lock(host->accessibility->mutex);for(auto const& item:host->accessibility->items)if(item.id==static_cast<int>(wp))enabled=item.enabled;}
@@ -792,13 +1390,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
             // Also cover an external DestroyWindow path: join the QA affinity
             // watchdog while the HWNDs are still valid, before handle reuse.
             if(host->liquid)host->liquid->Suspend(true,true);
-            KillTimer(hwnd,DpiTimer);KillTimer(hwnd,LiquidTimer);return 0;
+            KillTimer(hwnd,DpiTimer);KillTimer(hwnd,LiquidTimer);KillTimer(hwnd,LiquidCaptureTimer);KillTimer(hwnd,AuthorizedShortTestTimer);return 0;
         case WM_NCDESTROY:SetWindowLongPtrW(hwnd,GWLP_USERDATA,0);break;
         }
     }
     catch(...)
     {
         auto error=to_hresult();host->fallback=true;
+        try{host->UpdateAccessibleGeometry();}catch(...){}
+        host->TripOwned(error);
         try{host->ApplyMaterial();}catch(...){}
         host->Emit(12,0,0,0,0,-2,static_cast<unsigned>(error));
     }
@@ -809,17 +1409,21 @@ void RegisterWindows()
     WNDCLASSEXW cls{sizeof(cls)};cls.hInstance=GetModuleHandleW(nullptr);cls.hCursor=LoadCursor(nullptr,IDC_ARROW);
     cls.lpfnWndProc=WindowProc;cls.lpszClassName=WindowClass;
     if(!RegisterClassExW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
+    cls.lpfnWndProc=GlassWindowProc;cls.lpszClassName=GlassWindowClass;
+    if(!RegisterClassExW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
     cls.lpfnWndProc=ShadowProc;cls.lpszClassName=ShadowClass;
     if(!RegisterClassExW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
 }
 }
 
-extern "C" __declspec(dllexport) HRESULT __stdcall GDCreate(GDCallback callback,void* user,void** context,HWND* hwnd)
+static HRESULT CreateHost(GDCallback callback,void* user,uint32_t backend,bool authorizedShortTest,void** context,HWND* hwnd)
 {
     if(!context||!hwnd)return E_POINTER;*context=nullptr;*hwnd=nullptr;
     try
     {
         auto host=std::make_shared<gd::Host>();
+        host->liquidCaptureCandidate=backend==1||backend==3;
+        host->materialBackend=backend==3?1:backend;host->authorizedIncidentShortTest=authorizedShortTest;
         if(!winrt::Windows::System::DispatcherQueue::GetForCurrentThread())
         {
             DispatcherQueueOptions options{sizeof(options),DQTYPE_THREAD_CURRENT,DQTAT_COM_NONE};
@@ -832,10 +1436,105 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDCreate(GDCallback callback,
         host->callback=callback;host->user=user;*hwnd=window;*context=new gd::HostRef(host);return S_OK;
     }catch(...){return to_hresult();}
 }
+extern "C" __declspec(dllexport) HRESULT __stdcall GDCreate(GDCallback callback,void* user,void** context,HWND* hwnd)
+{return CreateHost(callback,user,1,false,context,hwnd);}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDCreateV2(GDCallback callback,void* user,GDHostCreationOptions const* options,void** context,HWND* hwnd)
+{
+    if(context)*context=nullptr;if(hwnd)*hwnd=nullptr;
+    if(options&&options->size==sizeof(GDHostCreationOptions)&&options->version==2){
+        if(options->backend!=3||options->reserved||!(options->sessionLow|options->sessionHigh))return E_INVALIDARG;
+        return CreateHost(callback,user,3,false,context,hwnd);
+    }
+    if(!options||options->size!=sizeof(GDHostCreationOptions)||options->version!=1||options->backend>3||(options->reserved&~1u)||(options->reserved&&options->backend!=2&&options->backend!=3))return E_INVALIDARG;
+    if(options->backend==3 && options->reserved!=1)return E_ACCESSDENIED;
+    if(options->backend==2||options->backend==3){
+        if(!(options->sessionLow|options->sessionHigh))return E_ACCESSDENIED;
+        wchar_t computer[MAX_COMPUTERNAME_LENGTH+1]{};DWORD count=MAX_COMPUTERNAME_LENGTH+1;
+        if(!GetComputerNameW(computer,&count))return E_ACCESSDENIED;
+        bool incident=_wcsicmp(computer,L"SHENG-AWA")==0;
+        if(incident!=(options->reserved==1))return E_ACCESSDENIED;
+    }
+    return CreateHost(callback,user,options->backend,options->reserved==1,context,hwnd);
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDTripOwnedGlass(void* context)
+{
+    auto host=gd::FromContext(context);if(!host)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;host->TripOwned();return S_OK;
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDSetOwnedGlassImage(void* context,uint8_t const* pixels,uint32_t width,uint32_t height,uint32_t bytes,GDOwnedGlassImageMapping const* mapping)
+{
+    auto host=gd::FromContext(context);if(!host||!mapping||!pixels)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(host->materialBackend!=2||host->ownedFaulted)return E_ACCESSDENIED;
+    if(mapping->size!=sizeof(GDOwnedGlassImageMapping)||mapping->version!=1||mapping->reserved
+        ||width==0||height==0||width>1600||height>1600||uint64_t(width)*height*4!=bytes
+        ||!std::isfinite(mapping->imageX)||!std::isfinite(mapping->imageY)
+        ||!std::isfinite(mapping->displayedWidth)||!std::isfinite(mapping->displayedHeight)
+        ||mapping->displayedWidth<=0||mapping->displayedHeight<=0||mapping->displayedWidth>100000||mapping->displayedHeight>100000
+        ||std::abs(mapping->imageX)>100000||std::abs(mapping->imageY)>100000
+        ||mapping->monitorWidth<=0||mapping->monitorHeight<=0||mapping->monitorWidth>32768||mapping->monitorHeight>32768)return E_INVALIDARG;
+    try{
+        if(!host->ownedRenderer)host->ownedRenderer=std::make_unique<gd::OwnedImageGlass>(host->d3d.get());
+        host->ownedRenderer->SetImage(pixels,width,height,bytes,gd::OwnedImageAlphaMode::Straight);
+        host->ownedMapping=*mapping;host->ownedImageSet=true;host->ownedFrameKey.clear();return S_OK;
+    }catch(...){host->TripOwned();return to_hresult();}
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDPresentOwnedGlass(void* context,int eligible,GDOwnedGlassLens const* lenses,uint32_t count,uint64_t sequence)
+{
+    auto host=gd::FromContext(context);if(!host)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(host->materialBackend!=2||host->ownedFaulted)return E_ACCESSDENIED;
+    if(count>3||(!lenses&&count)||sequence<=host->ownedSequence)return E_INVALIDARG;
+    for(uint32_t i=0;i<count;i++){
+        auto const& l=lenses[i];
+        if(!std::isfinite(l.centerX)||!std::isfinite(l.centerY)||!std::isfinite(l.width)||!std::isfinite(l.height)
+            ||!std::isfinite(l.radius)||!std::isfinite(l.opacity)||!std::isfinite(l.emphasis)||!std::isfinite(l.lightInk)
+            ||l.width<=0||l.height<=0||l.width>64||l.height>64||l.radius<0||l.radius>32
+            ||l.opacity<0||l.opacity>1||l.emphasis<0||l.emphasis>1)return E_INVALIDARG;
+    }
+    host->ownedSequence=sequence;
+    try{
+        RECT bounds{};check_bool(GetWindowRect(host->window,&bounds));auto const& m=host->ownedMapping;
+        host->ownedEligible=eligible!=0&&host->ownedImageSet&&bounds.left>=m.monitorX&&bounds.top>=m.monitorY
+            &&int64_t(bounds.right)<=int64_t(m.monitorX)+m.monitorWidth&&int64_t(bounds.bottom)<=int64_t(m.monitorY)+m.monitorHeight;
+        if(!host->ownedEligible||!host->liquidEnabled||host->frame.solid||!host->visible){host->ApplyMaterial();return S_FALSE;}
+        check_hresult(host->d3d->GetDeviceRemovedReason());
+        std::vector<float> key{float(bounds.left),float(bounds.top),float(host->cachedWidth),float(host->cachedHeight),
+            float(host->dpi),host->frame.radius,host->EffectiveTension(),float(count)};
+        for(uint32_t i=0;i<count;i++){auto const& l=lenses[i];key.insert(key.end(),{l.centerX,l.centerY,l.width,l.height,l.radius,l.opacity,l.emphasis,l.lightInk});}
+        if(host->ownedSurface&&key==host->ownedFrameKey){host->ApplyMaterial();return S_OK;}
+        gd::OwnedImageGlassFrame f{};
+        f.widthPx=uint32_t(host->cachedWidth);f.heightPx=uint32_t(host->cachedHeight);
+        f.dpiScaleX=f.dpiScaleY=host->Scale();f.windowOriginPxX=float(bounds.left);f.windowOriginPxY=float(bounds.top);
+        f.imageOriginPxX=m.imageX;f.imageOriginPxY=m.imageY;f.imageDisplayWidthPx=m.displayedWidth;f.imageDisplayHeightPx=m.displayedHeight;
+        f.bodyBoundsPx={0,0,float(f.widthPx),float(f.heightPx)};f.radiusDip=host->frame.radius;f.surfaceTension=host->EffectiveTension();
+        f.backgroundRed=((m.backgroundArgb>>16)&255)/255.0f;f.backgroundGreen=((m.backgroundArgb>>8)&255)/255.0f;f.backgroundBlue=(m.backgroundArgb&255)/255.0f;
+        f.peek=host->frame.height>52.01f;f.musicControls=count!=0;f.lensCount=count;
+        for(uint32_t i=0;i<count;i++){
+            auto const& l=lenses[i];auto scale=host->Scale();
+            f.lenses[i]={{(l.centerX-l.width*.5f)*scale,(l.centerY-l.height*.5f)*scale,l.width*scale,l.height*scale},l.radius,l.opacity,l.lightInk>.5f?0.0f:1.0f,l.emphasis};
+        }
+        // Complete D3D work BEFORE surface BeginDraw; never nest/interleave a
+        // material draw with Composition's borrowed drawing context.
+        auto bitmap=host->ownedRenderer->Render(host->cacheContext.get(),f);
+        check_hresult(host->d3d->GetDeviceRemovedReason());
+        bool resized=!host->ownedSurface||host->ownedSurface.Size().Width!=f.widthPx||host->ownedSurface.Size().Height!=f.heightPx;
+        if(resized){
+            if(host->ownedBrush)host->ownedBrush.Surface(nullptr);
+            host->ownedSurface=nullptr; // release before allocating the replacement
+            host->ownedSurface=host->CreateSurface(int(f.widthPx),int(f.heightPx));
+        }
+        host->Draw(host->ownedSurface,float(host->dpi),[&](ID2D1DeviceContext* dc){
+            dc->DrawBitmap(bitmap.get(),D2D1::RectF(0,0,f.widthPx/host->Scale(),f.heightPx/host->Scale()),1,D2D1_INTERPOLATION_MODE_LINEAR);
+        });
+        if(!host->ownedBrush){host->ownedBrush=host->compositor.CreateSurfaceBrush();host->ownedBrush.Stretch(CompositionStretch::None);}
+        host->ownedBrush.Surface(host->ownedSurface);host->glass.Brush(host->ownedBrush);host->ownedFrameKey=std::move(key);host->ApplyMaterial();return S_OK;
+    }catch(...){host->TripOwned();return to_hresult();}
+}
 extern "C" __declspec(dllexport) HRESULT __stdcall GDDestroy(void* context)
 {
     auto host=gd::FromContext(context);if(!host)return S_OK;
-    auto hr=host->CheckThread();if(FAILED(hr))return hr;host->Shutdown();delete static_cast<gd::HostRef*>(context);return S_OK;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;const HRESULT cleanup=host->Shutdown();delete static_cast<gd::HostRef*>(context);return cleanup;
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetContext(void* context,GDContext* result)
 {
@@ -853,6 +1552,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDCreateCompositionPath(void*
 {
     auto host=gd::FromContext(context);if(!host||!points||!result)return E_POINTER;*result=nullptr;
     auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
     if(count<3||count>64||!std::isfinite(rounding)||rounding<0||rounding>100)return E_INVALIDARG;
     for(unsigned i=0;i<count;++i)if(!std::isfinite(points[i].x)||!std::isfinite(points[i].y)||std::abs(points[i].x)>4096||std::abs(points[i].y)>4096)return E_INVALIDARG;
     try
@@ -862,31 +1562,82 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDCreateCompositionPath(void*
         CompositionPath path(source);*result=static_cast<::IInspectable*>(detach_abi(path));return S_OK;
     }catch(...){return to_hresult();}
 }
-extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrame(void* context,GDFrame const* frame)
+static HRESULT ApplyFrameWithTension(void* context,GDFrame const* frame,float tension)
 {
     auto host=gd::FromContext(context);if(!host||!frame)return E_POINTER;
     auto hr=host->CheckThread();if(FAILED(hr))return hr;
-    if(!std::isfinite(frame->width)||!std::isfinite(frame->height)||!std::isfinite(frame->radius)||!std::isfinite(frame->blur)||!std::isfinite(frame->tint)||frame->width<1||frame->height<1||frame->width>4096||frame->height>4096||frame->radius<0||frame->blur<0||frame->blur>100)return E_INVALIDARG;
+    if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+    if(!gd::ValidFrameRequest(*frame,tension))return E_INVALIDARG;
     try
     {
-        host->frame=*frame;
-        SetWindowPos(host->window,nullptr,0,0,int(std::lround(frame->width*host->Scale())),int(std::lround(frame->height*host->Scale())),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-        host->Layout();return S_OK;
-    }catch(...){return to_hresult();}
+        int width{},height{};check_hresult(gd::PhysicalFrameSize(*frame,host->dpi,false,width,height));
+        host->frame=*frame;host->surfaceTension=tension;
+        check_hresult(host->PositionHostWindows(0,0,width,height,SWP_NOMOVE));
+        if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+        host->Layout();host->UpdateAccessibleGeometry();return host->ownedFaulted?E_ABORT:S_OK;
+    }catch(...){auto failure=to_hresult();host->TripOwned(failure);try{host->UpdateAccessibleGeometry();}catch(...){}return failure;}
+}
+// Additive entry; GDFrame layout and the original export remain unchanged.
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrame(void* context,GDFrame const* frame)
+{return ApplyFrameWithTension(context,frame,0);}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrameWithTension(void* context,GDFrame const* frame,float tension)
+{return ApplyFrameWithTension(context,frame,tension);}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyPositionedFrameWithTension(
+    void* context,GDFrame const* frame,float tension,int screenX,int screenY) noexcept
+{
+    gd::HostRef host;
+    try
+    {
+        host=gd::FromContext(context);if(!host||!frame)return E_POINTER;
+        auto hr=host->CheckThread();if(FAILED(hr))return hr;
+        if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+        if(!gd::ValidFrameRequest(*frame,tension))return E_INVALIDARG;
+
+        int width{},height{};
+        hr=gd::PhysicalFrameSize(*frame,host->dpi,false,width,height);
+        if(FAILED(hr))return hr;
+        int targetX=screenX,targetY=screenY;
+if(int64_t(targetX)+width>std::numeric_limits<int>::max()||
+            int64_t(targetY)+height>std::numeric_limits<int>::max())return E_BOUNDS;
+
+        // Publish the new shape before SetWindowPos dispatches its synchronous
+        // messages. The combined rectangle is visible to WM_SIZE/layout as one
+        // candidate, and the WM_WINDOWPOSCHANGING clamp still
+        // protects any caller that supplies an edge-crossing placement.
+        host->frame=*frame;host->surfaceTension=tension;
+        hr=host->PositionHostWindows(targetX,targetY,width,height,SWP_NOACTIVATE);
+        if(FAILED(hr)){host->TripOwned(hr);try{host->UpdateAccessibleGeometry();}catch(...){}return hr;}
+        if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+        host->Layout();host->UpdateAccessibleGeometry();
+        if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+        return S_OK;
+    }
+    catch(...)
+    {
+        const HRESULT failure=to_hresult();
+        if(host){host->TripOwned(failure);try{host->UpdateAccessibleGeometry();}catch(...){}}
+        return failure;
+    }
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetPlacement(void* context,int x,int y)
 {
     auto host=gd::FromContext(context);if(!host)return E_POINTER;
     auto hr=host->CheckThread();if(FAILED(hr))return hr;
-    return SetWindowPos(host->window,nullptr,x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE)?S_OK:HRESULT_FROM_WIN32(GetLastError());
+    if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+    const HRESULT placement=host->PositionHostWindows(x,y,0,0,SWP_NOSIZE);
+    if(FAILED(placement)){host->TripOwned(placement);return placement;}
+    return host->ownedFaulted?E_ABORT:S_OK;
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetVisible(void* context,int visible)
 {
     auto host=gd::FromContext(context);if(!host)return E_POINTER;auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if((host->materialBackend==2||false)&&host->ownedFaulted&&visible)return E_ABORT;
     try
     {
+        bool becameVisible=!host->visible&&visible!=0;
         host->visible=visible!=0;
         host->UpdateLiquid();
+        if(visible&&host->ownedFaulted)return E_ABORT;
         if(!host->visible)
         {
             TRACKMOUSEEVENT cancel{sizeof(cancel),TME_CANCEL|TME_LEAVE,host->window,0};TrackMouseEvent(&cancel);
@@ -895,15 +1646,60 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDSetVisible(void* context,in
             if(GetCapture()==host->window)ReleaseCapture();
             if(wasCaptured)host->Emit(15);
         }
-        ShowWindow(host->window,visible?SW_SHOWNOACTIVATE:SW_HIDE);host->UpdateShadow();host->UpdateAccessibleGeometry();
+        if(host->visible){ShowWindow(host->glassWindow,SW_SHOWNOACTIVATE);ShowWindow(host->window,SW_SHOWNOACTIVATE);}
+        else{ShowWindow(host->window,SW_HIDE);ShowWindow(host->glassWindow,SW_HIDE);}
+        host->UpdateShadow();host->UpdateAccessibleGeometry();
+        if(visible&&host->ownedFaulted)return E_ABORT;
+        if(becameVisible)host->EnsureTopmost();
         return S_OK;
-    }catch(...){return to_hresult();}
+    }catch(...){auto failure=to_hresult();host->TripOwned(failure);return failure;}
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassEnabled(void* context,int enabled)
 {
     auto host=gd::FromContext(context);if(!host)return E_POINTER;
     auto hr=host->CheckThread();if(FAILED(hr))return hr;
-    try{host->liquidEnabled=enabled!=0;host->UpdateLiquid();return S_OK;}catch(...){return to_hresult();}
+    if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
+    try{host->liquidEnabled=enabled!=0;host->Layout();host->UpdateAccessibleGeometry();return S_OK;}catch(...){auto failure=to_hresult();host->TripOwned(failure);try{host->UpdateAccessibleGeometry();}catch(...){}return failure;}
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDUpdateLiquidGlassCapture(void* context)
+{
+    auto host=gd::FromContext(context);if(!host)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(!host->liquidCaptureCandidate)return E_ACCESSDENIED;
+    host->UpdateLiquidCapture();return S_OK;
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDResetLiquidGlassCapture(void* context)
+{
+    auto host=gd::FromContext(context);if(!host)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(!host->liquidCaptureCandidate)return E_ACCESSDENIED;
+    host->StopLiquidCapture();host->liquidCaptureFailure=S_OK;host->liquidCaptureFuseTripped=false;
+    host->UpdateLiquidCapture();return S_OK;
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDStopLiquidGlassCapture(void* context)
+{
+    auto host=gd::FromContext(context);if(!host)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(!host->liquidCaptureCandidate)return S_FALSE;
+    host->StopLiquidCapture();return S_OK;
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassInk(void* context,int* available,int* isDark)
+{
+    auto host=gd::FromContext(context);if(!host||!available||!isDark)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    *available=host->liquidCapture&&host->liquidCapture->HasPresentedFrame()?1:0;
+    *isDark=*available&&host->liquidCapture->InkIsDark()?1:0;
+    return S_OK;
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassInkColorSurface(void* context,::IInspectable** surface,uint64_t* generation)
+{
+    auto host=gd::FromContext(context);if(!host||!surface||!generation)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    *surface=nullptr;*generation=host->liquidInkSurfaceGeneration;
+    if(!host->liquidCapture||!host->liquidCapturePresented||!host->liquidInkSurface)return S_FALSE;
+    auto* value=reinterpret_cast<::IInspectable*>(get_abi(host->liquidInkSurface));
+    if(!value)return S_FALSE;
+    value->AddRef();*surface=value;return S_OK;
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassStatus(void* context,wchar_t* text,unsigned capacity)
 {
@@ -911,7 +1707,29 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassStatus(void* 
     auto hr=host->CheckThread();if(FAILED(hr))return hr;if(!capacity)return E_INVALIDARG;
     try
     {
-        auto status=host->liquid?host->liquid->Status():host->liquidEnabled?L"Fallback: D3D material device unavailable; enabled intent retained":L"Disabled";
+        std::wstring status;
+        if(host->materialBackend==2)status=host->ownedFaulted?L"Tripped: owned-image material stopped; restart authorization required":
+            !host->liquidEnabled?L"Disabled: owned-image candidate; no capture":
+            host->ownedImageSet&&host->ownedEligible?L"Experimental: wallpaper-only optical material; external windows are not refracted":
+            L"Fallback: solid; wallpaper candidate unavailable or outside capsule/peek";
+        else if(host->liquidCaptureCandidate)
+        {
+            if(!host->liquidEnabled)status=L"Disabled: liquid glass capture";
+            else if(!host->visible)status=L"Paused: liquid glass capture; host hidden";
+            else if(host->liquidCaptureFuseTripped)status=L"Fallback: liquid glass capture fuse tripped; system frost";
+            else if(FAILED(host->liquidCaptureFailure))
+            {
+                wchar_t detail[9]{};swprintf_s(detail,L"%08X",static_cast<unsigned>(host->liquidCaptureFailure));
+                status=L"Fallback: liquid glass capture failed; HRESULT 0x";status+=detail;status+=L"; system frost";
+            }
+            else status=host->liquidCapturePresented?L"Active: liquid glass capture":L"Starting: liquid glass capture";
+        }
+        else if(host->materialBackend==0)status=L"Fallback: solid backend; no capture";
+        else status=!host->liquidEnabled?L"Disabled: system frost; no desktop capture":
+            !host->visible?L"Paused: host hidden; capture-free optical material enabled":
+            host->frame.solid||host->fallback?L"Fallback: solid/system policy; no desktop capture":
+            host->opticalReady?L"Active: system frost + procedural curved light; no desktop capture":
+            L"Fallback: system frost; optical shader unavailable; no desktop capture";
         if(status.size()+1>capacity)return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
         wcscpy_s(text,capacity,status.c_str());return S_OK;
     }catch(...){return to_hresult();}
@@ -974,7 +1792,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDRenderSurface(void* context
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetNativeAbiInfo(GDNativeAbiInfo* result)
 {
     if(!result)return E_POINTER;if(result->size!=sizeof(GDNativeAbiInfo))return E_INVALIDARG;
-    *result={sizeof(GDNativeAbiInfo),2,sizeof(GDOp),sizeof(GDOpV2),1u|2u|4u|8u|16u,0};return S_OK;
+    *result={sizeof(GDNativeAbiInfo),2,sizeof(GDOp),sizeof(GDOpV2),1u|2u|4u|8u|16u|32u,0};return S_OK;
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDConfigureTypographyV2(void* context,uint32_t profile,uint32_t tokenRevision,wchar_t const* qaFontPath)
 {
@@ -1004,6 +1822,21 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDMeasureTextV2(void* context
         auto layout=host->Typography().CreateLayout(host->TextRequest(*operation));auto const& metrics=layout->metrics;
         *result={metrics.advance,metrics.widthIncludingTrailingWhitespace,metrics.height,metrics.baseline,metrics.lineHeight,metrics.lineCount};return S_OK;
     }catch(...){return to_hresult();}
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDMeasureTextInkBoundsV2(void* context,GDOpV2 const* operation,uint32_t stride,GDInkBounds* result)
+{
+    if(!result)return E_POINTER;*result={};auto host=gd::FromContext(context);if(!host||!operation)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;if(host->ownedFaulted)return E_ABORT;if(stride!=sizeof(GDOpV2))return E_INVALIDARG;
+    try
+    {
+        host->ValidateV2(*operation);auto const& op=operation->legacy;
+        if((op.kind!=2&&op.kind!=7)||operation->textRole==0||op.width<=0||op.height<=0)return E_INVALIDARG;
+        auto layout=host->Typography().CreateLayout(host->TextRequest(*operation));
+        auto bounds=gd::typography::InkBoundsForLayout(layout->textLayout.get());
+        if(!std::isfinite(bounds.left)||!std::isfinite(bounds.top)||!std::isfinite(bounds.right)||!std::isfinite(bounds.bottom)
+            ||bounds.right<bounds.left||bounds.bottom<bounds.top)return E_FAIL;
+        *result={bounds.left,bounds.top,bounds.right,bounds.bottom};return S_OK;
+    }catch(...){*result={};return to_hresult();}
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDRenderSurfaceV2(void* context,float width,float height,GDOpV2 const* operations,uint32_t count,uint32_t stride,::IInspectable** surface)
 {

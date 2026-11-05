@@ -427,4 +427,13 @@ std::shared_ptr<Layout const> Engine::CreateLayout(Request const& request){std::
 CacheStats Engine::Stats()const{std::lock_guard lock(impl->mutex);auto value=impl->counters;value.formats=impl->formats.size();value.layouts=impl->layouts.size();return value;}
 IDWriteFactory* Engine::Factory()const{return impl->factory.get();}
 std::wstring Engine::PrivateFamily()const{std::lock_guard lock(impl->mutex);return impl->privateFamily;}
+InkBounds InkBoundsForLayout(IDWriteTextLayout* layout)
+{
+    if(!layout)throw winrt::hresult_invalid_argument();
+    DWRITE_OVERHANG_METRICS overhang{};
+    check_hresult(layout->GetOverhangMetrics(&overhang));
+    FLOAT const layoutWidth=layout->GetMaxWidth();
+    FLOAT const layoutHeight=layout->GetMaxHeight();
+    return {-overhang.left,-overhang.top,layoutWidth+overhang.right,layoutHeight+overhang.bottom};
+}
 }

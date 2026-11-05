@@ -6,11 +6,17 @@ namespace GlassDesk.NativeBridge;
 public readonly record struct NativeTypographyDescription(uint Version,uint V1Size,uint V2Size,uint Capabilities);
 public readonly record struct NativeTextMetrics(float Advance,float WidthIncludingTrailingWhitespace,float Height,
     float Baseline,float LineHeight,uint LineCount);
+public readonly record struct NativeInkBounds(float Left,float Top,float Right,float Bottom)
+{
+    public bool IsEmpty=>Right<=Left||Bottom<=Top;
+}
 public readonly record struct TypographyCacheStats(ulong Formats,ulong Layouts,ulong FormatHits,ulong LayoutHits,ulong LayoutsCreated);
 
 /// <summary>Explicit managed/native batch negotiation. An old DLL cannot silently drop V2 typography.</summary>
 public static class NativeTypographyAbi
 {
+    internal const uint InkBoundsCapability=32;
+
     public static IReadOnlyDictionary<string,int> ManagedLayout {get;}=new Dictionary<string,int>
     {
         ["GDOp.size"]=Marshal.SizeOf<NativeMethods.Op>(),["GDOpV2.size"]=Marshal.SizeOf<NativeMethods.OpV2>(),
@@ -29,6 +35,8 @@ public static class NativeTypographyAbi
         if(!fields.Select(field=>ManagedLayout[field]).SequenceEqual(expected)||Marshal.SizeOf<NativeMethods.AbiInfo>()!=24||
             Marshal.SizeOf<NativeMethods.TextMetrics>()!=24||Marshal.SizeOf<NativeMethods.CacheStats>()!=40)
             throw new InvalidOperationException("GlassDesk managed typography ABI layout is incompatible.");
+        if(Marshal.SizeOf<NativeMethods.InkBounds>()!=16)
+            throw new InvalidOperationException("GlassDesk managed ink-bounds ABI layout is incompatible.");
         var info=new NativeMethods.AbiInfo{Size=24};
         try {Marshal.ThrowExceptionForHR(NativeMethods.GDGetNativeAbiInfo(ref info));}
         catch(EntryPointNotFoundException error)
@@ -62,10 +70,13 @@ internal static partial class NativeMethods
     }
     [StructLayout(LayoutKind.Sequential)] internal readonly record struct TextMetrics(float Advance,float TrailingWidth,float Height,
         float Baseline,float LineHeight,uint LineCount);
+    [StructLayout(LayoutKind.Sequential)] internal struct InkBounds
+    {public float Left,Top,Right,Bottom;}
     [StructLayout(LayoutKind.Sequential)] internal readonly record struct CacheStats(ulong Formats,ulong Layouts,ulong FormatHits,ulong LayoutHits,ulong LayoutsCreated);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDGetNativeAbiInfo(ref AbiInfo info);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall,CharSet=CharSet.Unicode)]internal static extern int GDConfigureTypographyV2(nint context,uint profile,uint revision,string? qaFontPath);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDMeasureTextV2(nint context,in OpV2 op,uint stride,out TextMetrics metrics);
+    [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDMeasureTextInkBoundsV2(nint context,in OpV2 op,uint stride,out InkBounds bounds);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern unsafe int GDRenderSurfaceV2(nint context,float width,float height,OpV2* operations,uint count,uint stride,out nint surface);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDGetTypographyCacheStats(nint context,out CacheStats stats);
 }

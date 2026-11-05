@@ -21,6 +21,7 @@ internal sealed class SkipGlyphVisual : IDisposable
         var compositor = host.Compositor;
         Visual = compositor.CreateShapeVisual(); Visual.Size = new(24);
         _ink = compositor.CreateColorBrush();
+        _ink.Color = Color.FromArgb(0, 0, 0, 0);
         _bar = compositor.CreatePathGeometry(); _triangle = compositor.CreatePathGeometry();
         _bar.Path = host.CreatePolygonPath([new(3, 4), new(5, 4), new(5, 20), new(3, 20)], .25f);
         var points = new List<Vector2> { new(20, 4) };
@@ -30,7 +31,9 @@ internal sealed class SkipGlyphVisual : IDisposable
         _triangle.Path = host.CreatePolygonPath(points.ToArray(), .15f);
         foreach (var geometry in new[] { _bar, _triangle })
         {
-            var shape = compositor.CreateSpriteShape(geometry); shape.FillBrush = _ink; Visual.Shapes.Add(shape);
+            var shape = compositor.CreateSpriteShape(geometry); shape.FillBrush = _ink;
+            shape.StrokeBrush = null; shape.StrokeThickness = 0;
+            Visual.Shapes.Add(shape);
         }
     }
 
@@ -49,6 +52,9 @@ internal sealed class SkipGlyphVisual : IDisposable
         Visual.Scale = new(next ? -scale : scale, scale, 1);
         _ink.Color = Color.FromArgb((byte)(color >> 24), (byte)(color >> 16), (byte)(color >> 8), (byte)color);
     }
+
+    // Skip contours use the caller-provided solid ink in both rendering modes.
+    public void SetOpticalGlass(bool value) { }
 
     public void Dispose()
     {

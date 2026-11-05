@@ -7,13 +7,34 @@ using Windows.Storage.Streams;
 
 namespace GlassDesk.App;
 
-/// <summary>Use installed local application artwork; missing apps keep the existing fallback.</summary>
+/// <summary>Read the installed app icon from the shell, with bundled artwork as an offline fallback.</summary>
 internal static class HomeIconLoader
 {
     public static async Task<byte[]?> ReadAsync(int index)
     {
         try
         {
+            if (index is 0 or 1)
+            {
+                string? executable = await Task.Run(() => FindExecutable(index)).ConfigureAwait(false);
+                if (executable is not null)
+                {
+                    try
+                    {
+                        var installedFile = await StorageFile.GetFileFromPathAsync(executable);
+                        using var installedThumbnail = await installedFile.GetThumbnailAsync(ThumbnailMode.SingleItem, 128, ThumbnailOptions.UseCurrentScale);
+                        if (installedThumbnail is not null)
+                        {
+                            var installedIcon = await ReadBytes(installedThumbnail);
+                            if (installedIcon is not null) return installedIcon;
+                        }
+                    }
+                    catch { /* Use the bundled offline artwork below. */ }
+                }
+                string asset = index == 0 ? "HomeMusic.png" : "HomeBrowser.png";
+                string bundledPath = Path.Combine(AppContext.BaseDirectory, "Assets", asset);
+                if (File.Exists(bundledPath)) return await File.ReadAllBytesAsync(bundledPath).ConfigureAwait(false);
+            }
             string? aumid = index switch
             {
                 2 => "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",

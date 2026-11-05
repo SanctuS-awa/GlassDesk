@@ -27,6 +27,7 @@ internal sealed class ControlDepthVisual : IDisposable
     Vector2 _size;
     float _radius;
     uint _fillArgb, _inkArgb;
+    bool _opticalGlass;
     bool _appearanceSet, _highContrast, _hovered, _pressed, _reducedMotion, _feedbackSet, _disposed;
 
     public ContainerVisual Visual { get; }
@@ -104,6 +105,15 @@ internal sealed class ControlDepthVisual : IDisposable
             fill.A = 255; _fillTop.Color = _fillBottom.Color = fill;
             _rimTop.Color = _rimBottom.Color = ink; _shape.StrokeThickness = 1;
         }
+        else if(_opticalGlass)
+        {
+            // Contrast belongs to the two-tone vector glyph, not an opaque
+            // keycap that hides the second lens. Preserve clear transmission.
+            bool primary = fill.A >= 0xD0;
+            _fillTop.Color=Color.FromArgb(primary?(byte)26:(byte)20,255,255,255);
+            _fillBottom.Color=Color.FromArgb(primary?(byte)10:(byte)5,255,255,255);
+            _rimTop.Color=Color.FromArgb(150,255,255,255);_rimBottom.Color=Color.FromArgb(40,24,35,48);_shape.StrokeThickness=.7f;
+        }
         else
         {
             bool inset = _kind == ControlDepthKind.InsetTrack;
@@ -120,6 +130,11 @@ internal sealed class ControlDepthVisual : IDisposable
         ApplyFeedback(false);
     }
 
+    public void SetOpticalGlass(bool value)
+    {
+        if(_opticalGlass==value)return;_opticalGlass=value;_appearanceSet=false;
+        SetAppearance(_fillArgb,_inkArgb,_highContrast);
+    }
     /// <summary>Only the empty plate changes. Text/icons and the hit target stay outside this visual.</summary>
     public void SetFeedback(bool hovered, bool pressed, bool reducedMotion)
     {

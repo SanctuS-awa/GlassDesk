@@ -1,3 +1,4 @@
+#error Screen_capture_is_prohibited_by_the_GlassDesk_user_requirement
 #pragma once
 #include "CaptureProtocol.h"
 #include <d3d11_1.h>

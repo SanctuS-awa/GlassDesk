@@ -1,10 +1,10 @@
-# GlassDesk 0.1 使用说明
+# GlassDesk 0.2.1.1 beta 使用说明
 
 支持 Windows 11 22H2 / Build 22621 或更新版本，x64。安装包自带 .NET 与 Windows App SDK 运行依赖。
 
 ## 安装与退出
 
-1. 从本仓库 [Releases](https://github.com/Sheng-awa/GlassDesk/releases/tag/v0.1.0) 下载 `GlassDesk-0.1.0-win-x64-setup.exe`，运行安装。
+1. 从本仓库 Releases 下载 0.2.1.1 beta 安装 ZIP，解压后运行其中的安装程序，并核对发布页的 SHA-256。
 2. 默认安装到 `%LocalAppData%\Programs\GlassDesk`，无需管理员权限。可选创建桌面快捷方式。
 3. 安装结束后启动，或从开始菜单搜索 GlassDesk。首次启动会打开设置。
 4. 关闭设置窗口后，组件继续在任务栏右下角托盘运行；完全退出请使用托盘菜单“退出”，或设置 → 通用中的退出操作。
