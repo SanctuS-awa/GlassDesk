@@ -1,5 +1,5 @@
 @echo off
-rem GlassDesk 0.2.1.3beta application publish (Windows + VS 2022 C++ Desktop + .NET SDK)
+rem GlassDesk 0.2.2 application publish (Windows + VS 2022 C++ Desktop + .NET SDK)
 setlocal
 cd /d "%~dp0.."
 if not exist "scripts\build-native.ps1" (

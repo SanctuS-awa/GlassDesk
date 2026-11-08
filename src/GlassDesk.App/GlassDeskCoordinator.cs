@@ -204,7 +204,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         effectsSubscribed=TrySubscribe(()=>uiSettings.AdvancedEffectsEnabledChanged+=OnAdvancedEffects);
         animationsSubscribed=TrySubscribe(()=>uiSettings.AnimationsEnabledChanged+=OnAnimations);
         powerSubscribed=TrySubscribe(()=>PowerManager.EnergySaverStatusChanged+=OnPower);
-        InitializeWidgetBoard();InitializeHomeSystemStatus();
+        InitializeWidgetBoard();InitializeHomeSystemStatus();InitializeWeather();
         RefreshSystemSettings();ApplyPresentation(controller.Motion.Current);Render();
         if(experimentalDesktopMaterialFailure is not null)System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(experimentalDesktopMaterialFailure).Throw();
         host.SetVisible(true);scene.SubmitOwnedGlass();
@@ -683,6 +683,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
                 return new(false,"设置未能保存，请检查数据目录是否可写。");
             }
             Preferences=pages.ApplyTo(next);
+            if(next.Weather!=previous.Weather)weather.Apply(Preferences.Weather);
             if(appearancePreview?.CompanionColor==next.CompanionColor&&appearancePreview.CompanionAppearanceId==next.CompanionAppearanceId)appearancePreview=null;
             notice=null;controller.UpdatePreferences(EffectivePreferences,Now);await plugins.ApplyPreferencesAsync(Preferences);await plugins.UpdateSceneAsync(PluginScene());ApplyPresentation(controller.Motion.Sample(Now));Render();WakeMotion();Changed?.Invoke();return new(true);
         }
@@ -806,6 +807,7 @@ internal sealed partial class GlassDeskCoordinator : ISettingsCoordinator,IDispo
         Clean(()=>homeVolumeWriteTimer.Stop());
         Clean(()=>homeSystemStatus.Changed-=OnHomeSystemStatusChanged);
         Clean(homeSystemStatus.Dispose);
+        Clean(DisposeWeather);
         Clean(outside.Dispose);Clean(audio.Dispose);Clean(()=>settings?.Dispose());Clean(foreground.Dispose);
         Clean(media.Dispose);Clean(system.Dispose);Clean(scene.Dispose);Clean(host.Dispose);Clean(store.Dispose);Clean(preferenceGate.Dispose);
         if(!CandidateGraphicsStopped)materialSession.TryCompleteCleanExit();

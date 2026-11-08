@@ -22,6 +22,8 @@ public interface ISettingsCoordinator
     IReadOnlyList<PluginContentPage> PluginPages { get; }
     string AudioStatus { get; }
     string LiquidGlassStatus { get; }
+    string WeatherStatus => "";
+    void RefreshWeather() { }
     Task<SettingsUpdateResult> ImportPluginAsync(string packagePath);
     Task<SettingsUpdateResult> RemovePluginAsync(string id);
     Task<SettingsUpdateResult> SetPluginEnabledAsync(string id,bool enabled);

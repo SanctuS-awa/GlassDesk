@@ -35,7 +35,7 @@ public sealed class Diagnostics
         {
             report = new
             {
-                SchemaVersion = 1, App = "GlassDesk", Version = "0.2.1.3beta", CapturedAt = DateTimeOffset.UtcNow,
+                SchemaVersion = 1, App = "GlassDesk", Version = "0.2.2", CapturedAt = DateTimeOffset.UtcNow,
                 OperatingSystem = RuntimeInformation.OSDescription, Architecture = RuntimeInformation.ProcessArchitecture.ToString(),
                 Framework = RuntimeInformation.FrameworkDescription,
                 MediaSource = NetEaseMediaAdapter.SourceAppId, Connected = _connected, Capabilities = _capabilities,

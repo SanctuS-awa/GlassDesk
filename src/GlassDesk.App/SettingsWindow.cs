@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using GlassDesk.Core;
+using GlassDesk.Platform;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
@@ -36,8 +37,8 @@ public sealed class SettingsWindow : Window, IDisposable
     const double ContentWidth = 680;
     static readonly AccessibilitySettings HighContrast = new();
     static readonly UISettings SystemColors = new();
-    static readonly string[] PageTitles = ["外观", "时间", "交互", "陪伴", "插件", "通用"];
-    const int TimePage = 1, PluginPage = 4;
+    static readonly string[] PageTitles = ["外观", "时间", "交互", "陪伴", "插件", "天气", "通用"];
+    const int TimePage = 1, PluginPage = 4, WeatherPage = 5;
     static ControlTemplate? _optionTemplate;
     static ControlTemplate OptionTemplate => _optionTemplate ??= (ControlTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("""
         <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -84,6 +85,23 @@ public sealed class SettingsWindow : Window, IDisposable
     readonly ToggleSwitch _clockTime = new() { OnContent = "", OffContent = "", MinWidth = 0, Width = 52 };
     readonly ToggleSwitch _clockDate = new() { OnContent = "", OffContent = "", MinWidth = 0, Width = 52 };
     readonly ToggleSwitch _clockWeekday = new() { OnContent = "", OffContent = "", MinWidth = 0, Width = 52 };
+    readonly ToggleSwitch _weatherEnabled = new() { OnContent = "", OffContent = "", MinWidth = 0, Width = 52 };
+    readonly ToggleSwitch _weatherAuto = new() { OnContent = "", OffContent = "", MinWidth = 0, Width = 52 };
+    readonly AutoSuggestBox _weatherSearch = new()
+    {
+        PlaceholderText = "搜索省、市或区县，例如：朝阳、南昌",
+        QueryIcon = new SymbolIcon(Symbol.Find),
+        MinWidth = 0,
+        HorizontalAlignment = HorizontalAlignment.Stretch
+    };
+    readonly ComboBox _weatherProvince = new() { PlaceholderText = "省份", MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    readonly ComboBox _weatherCity = new() { PlaceholderText = "城市", MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    readonly ComboBox _weatherDistrict = new() { PlaceholderText = "区县（可选）", MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    readonly TextBlock _weatherCurrent = Description();
+    readonly TextBlock _weatherStatus = Description();
+    StackPanel? _weatherManualPanel;
+    int _weatherShownCode = -1;
+    bool _weatherFilling;
     readonly TextBlock _audioStatus = Description();
     readonly TextBlock _liquidGlassStatus = Description();
     readonly StackPanel _pluginList = new() { Spacing = 12 };
@@ -338,7 +356,7 @@ public sealed class SettingsWindow : Window, IDisposable
         brandText.Children.Add(Description("桌面陪伴"));
         brand.Children.Add(brandText);
         _navigation.PaneHeader = brand;
-        string[] glyphs = ["\uE790", "\uE823", "\uE7C2", "\uE76E", "\uEA86", "\uE713"];
+        string[] glyphs = ["\uE790", "\uE823", "\uE7C2", "\uE76E", "\uEA86", "\uE753", "\uE713"];
         for (int index = 0; index < PageTitles.Length; index++)
         {
             var label = SettingsTypography.Apply(new TextBlock { Text = PageTitles[index] }, TextRole.NavigationSettings, InkRole.Primary);
@@ -557,6 +575,36 @@ public sealed class SettingsWindow : Window, IDisposable
         plugins.Children.Add(Description("插件在程序内运行，请仅导入你信任的文件。更新同名插件会保留配置。"));
         plugins.Children.Add(_pluginList); plugins.Children.Add(_pluginPages);
 
+        var weatherPage = Section("首页天气卡的城市与定位。");
+        weatherPage.Children.Add(Group(
+            ToggleRow("显示天气", _weatherEnabled, "关闭后不再联网获取天气。"),
+            ToggleRow("自动定位", _weatherAuto, "优先使用 Windows 定位；不可用时按网络 IP 粗略定位，开启 VPN 时可能不准。")));
+        Name(_weatherEnabled, "显示天气");
+        Name(_weatherAuto, "自动定位");
+        var weatherManualPanel = new StackPanel { Spacing = 12 };
+        _weatherManualPanel = weatherManualPanel;
+        weatherManualPanel.Children.Add(SectionHeading("手动选择城市"));
+        Name(_weatherSearch, "搜索城市");
+        weatherManualPanel.Children.Add(_weatherSearch);
+        var weatherRegions = new Grid { ColumnSpacing = 8 };
+        for (int index = 0; index < 3; index++)
+            weatherRegions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Name(_weatherProvince, "省份");
+        Name(_weatherCity, "城市");
+        Name(_weatherDistrict, "区县");
+        weatherRegions.Children.Add(_weatherProvince);
+        Grid.SetColumn(_weatherCity, 1); weatherRegions.Children.Add(_weatherCity);
+        Grid.SetColumn(_weatherDistrict, 2); weatherRegions.Children.Add(_weatherDistrict);
+        weatherManualPanel.Children.Add(weatherRegions);
+        weatherManualPanel.Children.Add(_weatherCurrent);
+        weatherPage.Children.Add(weatherManualPanel);
+        var refreshWeather = CommandButton("立即刷新", "\uE72C");
+        refreshWeather.Click += (_, _) => _coordinator.RefreshWeather();
+        weatherPage.Children.Add(refreshWeather);
+        weatherPage.Children.Add(_weatherStatus);
+        weatherPage.Children.Add(Description("天气数据来自 Open-Meteo（CC BY 4.0）；城市与坐标来自阿里云 DataV 行政区划数据。"));
+        FillProvinces();
+
         var startup = Section();
         startup.Children.Add(Group(ToggleRow("登录 Windows 后启动", _startup, "下次登录时自动启动 GlassDesk。")));
         var hotkeySettings = new StackPanel { Spacing = 10, Padding = new Thickness(0) };
@@ -635,7 +683,7 @@ public sealed class SettingsWindow : Window, IDisposable
         var general = Section("启动、快捷键、音乐连接与诊断。");
         // Keep the existing live-save and connection controls in one concise page.
         general.Children.Add(startup); general.Children.Add(connection);
-        var sections = new[] { appearance, time, interaction, companion, plugins, general };
+        var sections = new[] { appearance, time, interaction, companion, plugins, weatherPage, general };
         // One page-level 16 DIP tail plus the deck's 8 DIP padding keeps the last
         // card clear of the footer (the plan's ≥24 DIP bottom inset per page).
         foreach (var page in sections) { page.Padding = new Thickness(0, 0, 0, 16); page.MaxWidth = ContentWidth; }
@@ -948,6 +996,79 @@ public sealed class SettingsWindow : Window, IDisposable
         _clockTime.Toggled += (_, _) => { if (!_refreshing) QueuePreferences(CurrentPreferences with { ClockShowTime = _clockTime.IsOn }); };
         _clockDate.Toggled += (_, _) => { if (!_refreshing) QueuePreferences(CurrentPreferences with { ClockShowDate = _clockDate.IsOn }); };
         _clockWeekday.Toggled += (_, _) => { if (!_refreshing) QueuePreferences(CurrentPreferences with { ClockShowWeekday = _clockWeekday.IsOn }); };
+        _weatherEnabled.Toggled += (_, _) =>
+        {
+            if (!_refreshing) QueuePreferences(CurrentPreferences with
+            {
+                Weather = CurrentPreferences.Weather with { Enabled = _weatherEnabled.IsOn }
+            });
+        };
+        _weatherAuto.Toggled += (_, _) =>
+        {
+            if (!_refreshing) QueuePreferences(CurrentPreferences with
+            {
+                Weather = CurrentPreferences.Weather with
+                {
+                    Mode = _weatherAuto.IsOn ? WeatherLocationMode.Auto : WeatherLocationMode.Manual
+                }
+            });
+        };
+        _weatherProvince.SelectionChanged += async (_, _) =>
+        {
+            if (_refreshing || _weatherFilling ||
+                _weatherProvince.SelectedItem is not ComboBoxItem item || item.Tag is not int provinceCode)
+                return;
+            FillCities(provinceCode);
+            FillDistricts(provinceCode);
+            IReadOnlyList<ChinaRegion> cities = ChinaRegionCatalog.Cities(provinceCode);
+            if (cities.Count == 0)
+            {
+                await SelectRegion(provinceCode);
+                return;
+            }
+            if (cities.Count == 1 && cities[0].Code == provinceCode)
+            {
+                SetComboSelection(_weatherCity, provinceCode);
+                FillDistricts(provinceCode);
+                await SelectRegion(provinceCode);
+            }
+        };
+        _weatherCity.SelectionChanged += async (_, _) =>
+        {
+            if (_refreshing || _weatherFilling ||
+                _weatherCity.SelectedItem is not ComboBoxItem item || item.Tag is not int cityCode)
+                return;
+            FillDistricts(cityCode);
+            await SelectRegion(cityCode);
+        };
+        _weatherDistrict.SelectionChanged += async (_, _) =>
+        {
+            if (_refreshing || _weatherFilling ||
+                _weatherDistrict.SelectedItem is not ComboBoxItem item || item.Tag is not int districtCode)
+                return;
+            await SelectRegion(districtCode);
+        };
+        _weatherSearch.TextChanged += (sender, args) =>
+        {
+            if (args.Reason == AutoSuggestionBoxTextChangeReason.UserInput)
+                sender.ItemsSource = ChinaRegionCatalog.Search(sender.Text, 12)
+                    .Select(region => new WeatherRegionSuggestion(region.Code, ChinaRegionCatalog.PathOf(region.Code)))
+                    .ToList();
+        };
+        _weatherSearch.SuggestionChosen += (sender, args) =>
+        {
+            if (args.SelectedItem is WeatherRegionSuggestion suggestion)
+                sender.Text = suggestion.Path;
+        };
+        _weatherSearch.QuerySubmitted += async (sender, args) =>
+        {
+            int? code = args.ChosenSuggestion is WeatherRegionSuggestion suggestion
+                ? suggestion.Code
+                : ChinaRegionCatalog.Search(args.QueryText, 1).FirstOrDefault()?.Code;
+            if (code is not int selectedCode) return;
+            ShowRegionInCombos(selectedCode);
+            await SelectRegion(selectedCode);
+        };
         _hotkey.KeyDown += CaptureHotkey;
         _colorPicker.ColorChanged += (_, args) =>
         {
@@ -972,6 +1093,133 @@ public sealed class SettingsWindow : Window, IDisposable
         _customColor.TextChanged += (_, _) => { if (!_refreshing && !_writingHex) _hexDirty = true; };
         _customColor.LostFocus += async (_, _) => { if (!_refreshing && CommitHexColor()) await FlushPendingAsync(); };
         _visibility.Click += (_, _) => _coordinator.ToggleVisibility();
+    }
+
+    void FillProvinces()
+    {
+        bool wasFilling = _weatherFilling;
+        _weatherFilling = true;
+        try
+        {
+            _weatherProvince.Items.Clear();
+            foreach (ChinaRegion region in ChinaRegionCatalog.Provinces)
+                _weatherProvince.Items.Add(new ComboBoxItem { Content = region.Name, Tag = region.Code });
+        }
+        finally { _weatherFilling = wasFilling; }
+    }
+
+    void FillCities(int provinceCode)
+    {
+        bool wasFilling = _weatherFilling;
+        _weatherFilling = true;
+        try
+        {
+            _weatherCity.Items.Clear();
+            foreach (ChinaRegion region in ChinaRegionCatalog.Cities(provinceCode))
+                _weatherCity.Items.Add(new ComboBoxItem { Content = region.Name, Tag = region.Code });
+        }
+        finally { _weatherFilling = wasFilling; }
+    }
+
+    void FillDistricts(int cityCode)
+    {
+        bool wasFilling = _weatherFilling;
+        _weatherFilling = true;
+        try
+        {
+            _weatherDistrict.Items.Clear();
+            foreach (ChinaRegion region in ChinaRegionCatalog.Districts(cityCode))
+                _weatherDistrict.Items.Add(new ComboBoxItem { Content = region.Name, Tag = region.Code });
+        }
+        finally { _weatherFilling = wasFilling; }
+    }
+
+    void ShowRegionInCombos(int code)
+    {
+        ChinaRegion? region = ChinaRegionCatalog.Find(code);
+        if (region is null) return;
+        ChinaRegion? province;
+        ChinaRegion? city = null;
+        ChinaRegion? district = null;
+        if (region.Level == 1)
+        {
+            province = region;
+            city = ChinaRegionCatalog.Cities(region.Code).FirstOrDefault(item => item.Code == region.Code);
+        }
+        else if (region.Level == 2)
+        {
+            city = region;
+            province = ChinaRegionCatalog.Find(region.ParentCode);
+        }
+        else
+        {
+            district = region;
+            ChinaRegion? parent = ChinaRegionCatalog.Find(region.ParentCode);
+            if (parent is null) return;
+            if (parent.Level == 1)
+            {
+                province = parent;
+                city = parent;
+            }
+            else
+            {
+                city = parent;
+                province = ChinaRegionCatalog.Find(parent.ParentCode);
+            }
+        }
+        if (province is null) return;
+
+        bool wasFilling = _weatherFilling;
+        _weatherFilling = true;
+        try
+        {
+            FillProvinces();
+            _weatherProvince.SelectedItem = FindComboItem(_weatherProvince, province.Code);
+            FillCities(province.Code);
+            if (city is not null)
+                _weatherCity.SelectedItem = FindComboItem(_weatherCity, city.Code);
+            FillDistricts((city ?? province).Code);
+            if (district is not null)
+                _weatherDistrict.SelectedItem = FindComboItem(_weatherDistrict, district.Code);
+            _weatherShownCode = code;
+        }
+        finally { _weatherFilling = wasFilling; }
+    }
+
+    void SetComboSelection(ComboBox combo, int code)
+    {
+        bool wasFilling = _weatherFilling;
+        _weatherFilling = true;
+        try { combo.SelectedItem = FindComboItem(combo, code); }
+        finally { _weatherFilling = wasFilling; }
+    }
+
+    static ComboBoxItem? FindComboItem(ComboBox combo, int code)
+    {
+        foreach (object? item in combo.Items)
+            if (item is ComboBoxItem { Tag: int itemCode } comboItem && itemCode == code)
+                return comboItem;
+        return null;
+    }
+
+    async Task SelectRegion(int code)
+    {
+        ChinaRegion? region = ChinaRegionCatalog.Find(code);
+        if (region is null) return;
+        _weatherShownCode = code;
+        QueuePreferences(CurrentPreferences with
+        {
+            Weather = CurrentPreferences.Weather with
+            {
+                Mode = WeatherLocationMode.Manual,
+                RegionCode = region.Code,
+                RegionName = region.Name,
+                RegionPath = ChinaRegionCatalog.PathOf(region.Code),
+                Latitude = region.Latitude,
+                Longitude = region.Longitude
+            }
+        });
+        await FlushPendingAsync();
     }
 
     WidgetPreferences CurrentPreferences => _pending ?? _inFlight ?? _coordinator.Preferences;
@@ -1116,7 +1364,8 @@ public sealed class SettingsWindow : Window, IDisposable
             RunAtStartup = pending.RunAtStartup != requested.RunAtStartup ? pending.RunAtStartup : actual.RunAtStartup,
             HotkeyKey = pending.HotkeyKey != requested.HotkeyKey ? pending.HotkeyKey : actual.HotkeyKey,
             HotkeyModifiers = pending.HotkeyModifiers != requested.HotkeyModifiers ? pending.HotkeyModifiers : actual.HotkeyModifiers,
-            OnboardingSeen = pending.OnboardingSeen != requested.OnboardingSeen ? pending.OnboardingSeen : actual.OnboardingSeen
+            OnboardingSeen = pending.OnboardingSeen != requested.OnboardingSeen ? pending.OnboardingSeen : actual.OnboardingSeen,
+            Weather = pending.Weather != requested.Weather ? pending.Weather : actual.Weather
         };
 
     void CaptureHotkey(object sender, KeyRoutedEventArgs args)
@@ -1172,6 +1421,35 @@ public sealed class SettingsWindow : Window, IDisposable
             _companion.IsOn = preference.CompanionEnabled;
             _companionFollowMouse.IsOn = preference.CompanionFollowMouse;
             _liquidGlass.IsOn = preference.LiquidGlassEnabled;
+            WeatherPreferences weather = preference.Weather;
+            _weatherEnabled.IsOn = weather.Enabled;
+            _weatherAuto.IsOn = weather.Mode == WeatherLocationMode.Auto;
+            StackPanel weatherPanel = _weatherManualPanel!;
+            weatherPanel.Visibility = _weatherAuto.IsOn ? Visibility.Collapsed : Visibility.Visible;
+            _weatherAuto.IsEnabled = weather.Enabled;
+            _weatherSearch.IsEnabled = _weatherProvince.IsEnabled = _weatherCity.IsEnabled =
+                _weatherDistrict.IsEnabled = weather.Enabled;
+            _weatherCurrent.Text = weather.HasManualPlace
+                ? "当前：" + (string.IsNullOrWhiteSpace(weather.RegionPath)
+                    ? string.IsNullOrWhiteSpace(weather.RegionName) ? "已选城市" : weather.RegionName
+                    : weather.RegionPath)
+                : "当前：尚未选择城市";
+            bool weatherComboFocused = _weatherProvince.FocusState == FocusState.Keyboard ||
+                _weatherCity.FocusState == FocusState.Keyboard ||
+                _weatherDistrict.FocusState == FocusState.Keyboard;
+            if (weather.RegionCode != _weatherShownCode && !weatherComboFocused)
+            {
+                if (weather.RegionCode > 0)
+                    ShowRegionInCombos(weather.RegionCode);
+                else
+                {
+                    FillProvinces();
+                    FillCities(0);
+                    FillDistricts(0);
+                    _weatherShownCode = 0;
+                }
+            }
+            _weatherStatus.Text = _coordinator.WeatherStatus;
             RefreshRuntimeStatus();
             if (_customColor.FocusState == FocusState.Unfocused && !_hexDirty)
             {
@@ -1259,6 +1537,7 @@ public sealed class SettingsWindow : Window, IDisposable
             if (selected == 0) _capsuleLayoutPreview?.Present(CurrentPreferences, DateTimeOffset.Now);
             if (selected == TimePage) _clockLayoutPreview?.Present(CurrentPreferences, DateTimeOffset.Now);
             if (selected == 2) _liquidPreview?.Present(CurrentPreferences);
+            if (selected == WeatherPage) _weatherStatus.Text = _coordinator.WeatherStatus;
         }
         // Native capture advances independently of preference/scene Changed events.
         // Read its live state and map the raw native wording into user-facing
@@ -1676,6 +1955,11 @@ public sealed class SettingsWindow : Window, IDisposable
     static bool Down(VirtualKey key) => (GetKeyState((int)key) & 0x8000) != 0;
     [DllImport("user32.dll")] static extern short GetKeyState(int key);
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(nint hwnd);
+
+    private sealed record WeatherRegionSuggestion(int Code, string Path)
+    {
+        public override string ToString() => Path;
+    }
 
     public void CloseForShutdown()
     {

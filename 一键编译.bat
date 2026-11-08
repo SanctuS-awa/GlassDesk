@@ -1,5 +1,5 @@
 @echo off
-rem GlassDesk 0.2.1.3beta one-click build (Windows + VS 2022 C++ Desktop + .NET SDK)
+rem GlassDesk 0.2.2 one-click build (Windows + VS 2022 C++ Desktop + .NET SDK)
 rem Double-click to run. Any step that fails stops here and shows the error.
 rem NOTE: This file cannot run on Linux; run it on Windows by double-clicking.
 setlocal

@@ -1,5 +1,5 @@
 @echo off
-rem GlassDesk 0.2.1.3beta installer packaging (Windows)
+rem GlassDesk 0.2.2 installer packaging (Windows)
 setlocal
 cd /d "%~dp0"
 if not exist "scripts\build-app.cmd" (
@@ -66,20 +66,20 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-if not exist "artifacts\installer\GlassDesk-0.2.1.3beta-win-x64-setup.exe" (
+if not exist "artifacts\installer\GlassDesk-0.2.2-win-x64-setup.exe" (
   echo [ERROR] ISCC reported success but the installer was not created.
   pause
   exit /b 1
 )
 
 echo [4/4] Writing SHA-256 checksum...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; $path = 'artifacts\installer\GlassDesk-0.2.1.3beta-win-x64-setup.exe'; $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); [IO.File]::WriteAllText($path + '.sha256', ($hash + '  ' + [IO.Path]::GetFileName($path) + [Environment]::NewLine), [Text.Encoding]::ASCII)"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; $path = 'artifacts\installer\GlassDesk-0.2.2-win-x64-setup.exe'; $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); [IO.File]::WriteAllText($path + '.sha256', ($hash + '  ' + [IO.Path]::GetFileName($path) + [Environment]::NewLine), [Text.Encoding]::ASCII)"
 if errorlevel 1 (
   echo [ERROR] SHA-256 generation failed.
   pause
   exit /b 1
 )
-if not exist "artifacts\installer\GlassDesk-0.2.1.3beta-win-x64-setup.exe.sha256" (
+if not exist "artifacts\installer\GlassDesk-0.2.2-win-x64-setup.exe.sha256" (
   echo [ERROR] SHA-256 file was not created.
   pause
   exit /b 1

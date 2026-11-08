@@ -7,4 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="../GlassDesk.Core/GlassDesk.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Weather\china-regions.json" LogicalName="GlassDesk.Platform.Weather.china-regions.json" />
+  </ItemGroup>
 </Project>

@@ -63,6 +63,8 @@ internal sealed partial class GlassDeskCoordinator
             bool expanded = !disposed && controller.Visible && controller.Form == WidgetForm.Details
                 && pages.CurrentPageId == DetailsPageController.Home;
             homeSystemStatus.SetExpanded(expanded);
+            SetWeatherHomeVisible(expanded);
+            if (expanded) scene.UpdateHomeWeather(weatherSnapshot);
             // Render() calls this before scene.Render(), so sync the current snapshot now.
             var latest = homeSystemStatus.Snapshot;
             homeStatusSnapshot = homeVolumeDragging && latest.AudioAvailable && latest.HasValidVolume

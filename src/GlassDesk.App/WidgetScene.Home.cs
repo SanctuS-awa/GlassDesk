@@ -176,7 +176,7 @@ public sealed partial class WidgetScene
             high ? _text : TypographyCatalog.Ink(InkRole.Secondary),
             _accent, _host.Context.Dpi, HomeAppNames, HomeAppGlyphs, HomeAppColors, HomeFolderLabels,
             _media, _now, progress, _notice, _homeCalendarMonth, _homeSystemStatus,
-            _homeVolumeDragging, _homeVolumeNotice);
+            _homeVolumeDragging, _homeVolumeNotice, _homeWeather);
     }
 
     internal void RefreshHomeDashboardProgress() { }
@@ -256,6 +256,16 @@ public sealed partial class WidgetScene
         _homeVolumeDragging = volumeDragging;
         _homeVolumeNotice = volumeNotice;
         UpdateHomeVisual(); BuildControls();
+    }
+
+    WeatherSnapshot _homeWeather = WeatherSnapshot.Initial;
+    /// <summary>0.2.2: called by the coordinator (UI thread) whenever the weather service publishes.</summary>
+    internal void UpdateHomeWeather(WeatherSnapshot snapshot)
+    {
+        if (_disposed || snapshot is null) return;
+        if (_homeWeather == snapshot) return;
+        _homeWeather = snapshot;
+        UpdateHomeVisual();
     }
 
     internal void ChangeHomeCalendarMonth(int direction)

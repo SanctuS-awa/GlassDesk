@@ -18,7 +18,7 @@ namespace gd::liquidglass::diagnostics
 {
 
 inline constexpr wchar_t kLiquidGlassPluginVersion[] = L"0.3";
-inline constexpr wchar_t kLiquidGlassDllVersion[] = L"0.2.1.3beta";
+inline constexpr wchar_t kLiquidGlassDllVersion[] = L"0.2.2";
 inline constexpr wchar_t kLiquidGlassShaderVersion[] = L"0.3";
 
 // A single worker owns the UTF-8 log file. Rendering only enqueues short,
@@ -234,7 +234,7 @@ inline void Log(wchar_t const* event, wchar_t const* fields = L"") noexcept
     GetLocalTime(&now);
     wchar_t line[2048]{};
     const int length = swprintf_s(line, std::size(line),
-        L"%04u-%02u-%02uT%02u:%02u:%02u.%03u+08:00 [Asia/Shanghai] runId=%08X-%llu event=%ls buildId=0.2.1.3beta dllVersion=%ls shaderVersion=%ls pluginVersion=%ls %ls",
+        L"%04u-%02u-%02uT%02u:%02u:%02u.%03u+08:00 [Asia/Shanghai] runId=%08X-%llu event=%ls buildId=0.2.2 dllVersion=%ls shaderVersion=%ls pluginVersion=%ls %ls",
         static_cast<unsigned>(now.wYear),static_cast<unsigned>(now.wMonth),static_cast<unsigned>(now.wDay),
         static_cast<unsigned>(now.wHour),static_cast<unsigned>(now.wMinute),static_cast<unsigned>(now.wSecond),
         static_cast<unsigned>(now.wMilliseconds),static_cast<unsigned>(GetCurrentProcessId()),

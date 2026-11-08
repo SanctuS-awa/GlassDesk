@@ -1,4 +1,4 @@
-# Third-party components for GlassDesk 0.2.1.3beta
+# Third-party components for GlassDesk 0.2.2
 
 The license inventory was captured on 2026-10-12; package versions, source identifiers and SHA-256 hashes are recorded in [licenses/manifest.json](licenses/manifest.json). Review and refresh it when the locked dependencies change. The license texts govern their respective components; GlassDesk's original source is separately covered by LICENSE.
 
@@ -69,3 +69,9 @@ Distribute this file and the complete `licenses` directory together with the unm
 The Microsoft Windows App SDK and Windows ML binary terms require significant application functionality and terms protecting the redistributable components for external users and distributors (see their Distribution Requirements sections). Preserve original notices and satisfy the component-specific conditions when repackaging. MIT, BSD-style and nested third-party licenses retain their own grants and requirements. No Microsoft endorsement is implied.
 
 `licenses/collect_licenses.py` recreates the bundle from the exact restored package versions and installed SDK/Inno files, with fixed official source URLs for licenses absent from those local packages. The DOCX sources are retained unchanged alongside clearly marked plain-text extractions. Package versions and source hashes are recorded in [the manifest](licenses/manifest.json); rebuild this inventory when dependencies change.
+
+## 数据来源
+
+- Open-Meteo 天气数据（https://open-meteo.com/），依据 CC BY 4.0 许可，运行时在线获取，不随安装包分发。
+- 中国行政区划名称与中心点坐标来自阿里云 DataV.GeoAtlas（https://datav.aliyun.com/portal/school/atlas/area_selector），内嵌于 `GlassDesk.Platform.dll` 的 `china-regions.json`，仅用于城市选择与就近匹配。
+- IP 粗略定位服务：myip.ipip.net、ipwho.is，仅运行时查询，不随安装包分发。

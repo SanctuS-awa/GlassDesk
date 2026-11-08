@@ -139,7 +139,7 @@ internal sealed class HomeVisual : IDisposable
         uint foreground, uint background, uint secondary, uint accent, uint dpi, IReadOnlyList<string> appNames,
         IReadOnlyList<string> appGlyphs, IReadOnlyList<uint> appColors, IReadOnlyList<string> folderNames,
         MediaSnapshot media, DateTimeOffset now, float progress, string? notice, DateTime calendarMonth,
-        HomeSystemStatusSnapshot systemStatus, bool volumeDragging, string? volumeNotice)
+        HomeSystemStatusSnapshot systemStatus, bool volumeDragging, string? volumeNotice, WeatherSnapshot weather)
     {
         bool initial = !_visible || _layout is null;
         bool geometryChanged = _layout?.Width != layout.Width || _layout?.Height != layout.Height;
@@ -173,10 +173,10 @@ internal sealed class HomeVisual : IDisposable
             ? hoveredAction : -1;
         int statusHover = hoveredAction == WidgetActions.HomeVolume ? hoveredAction : -1;
         var dashboardKey = DashboardKey(layout, media, now, calendarMonth, progress, foreground, secondary, accent,
-            highContrast, lightInk, pressed, canvasHover, dpi);
+            highContrast, lightInk, pressed, canvasHover, dpi, weather);
         _dashboard.SetCached(dashboardKey, new(layout.CanvasWidth, layout.CanvasHeight),
             DashboardOperations(layout, media, now, calendarMonth, progress, pressed, canvasHover, highContrast, lightInk,
-                foreground, secondary, accent));
+                foreground, secondary, accent, weather));
         var toggle = layout.PresentedContent(layout.MediaToggle);
         _mediaToggleRoot.Offset = new(toggle.X, toggle.Y, 0);
         _mediaToggleRoot.Size = new(toggle.Width, toggle.Height);
@@ -192,7 +192,8 @@ internal sealed class HomeVisual : IDisposable
         bool wifi = string.Equals(systemStatus.NetworkKind, "Wifi", StringComparison.OrdinalIgnoreCase);
         bool ethernet = string.Equals(systemStatus.NetworkKind, "Ethernet", StringComparison.OrdinalIgnoreCase);
         bool hasBattery = systemStatus.HasBattery != false;
-        var wifiRect = hasBattery ? layout.StatusWifi : layout.StatusWifiNoBattery;
+        var wifiRect = !hasBattery ? layout.StatusWifiNoBattery
+            : systemStatus.OnAc == true ? layout.StatusWifiWithPlug : layout.StatusWifi;
         _wifi.Offset = new(wifiRect.X, wifiRect.Y, 0);
         _wifi.IsVisible = !ethernet;
         int level = wifi && systemStatus.SignalBars0To5 is byte signal && signal <= 5
@@ -325,10 +326,11 @@ internal sealed class HomeVisual : IDisposable
     }
 
     static string DashboardKey(HomePresentationLayout layout, MediaSnapshot media, DateTimeOffset now, DateTime calendarMonth,
-        float progress, uint foreground, uint secondary, uint accent, bool highContrast, bool lightInk, int pressed, int hoveredAction, uint dpi)
+        float progress, uint foreground, uint secondary, uint accent, bool highContrast, bool lightInk,
+        int pressed, int hoveredAction, uint dpi, WeatherSnapshot weather)
     {
         _ = progress;
-        return $"{layout.CanvasWidth}/{layout.CanvasHeight}/{layout.ScrollX}/{layout.ScrollY}/{calendarMonth:yyyyMM}/{now:yyyyMMddHHmm}/{CultureInfo.CurrentCulture.DateTimeFormat.ShortTimePattern}/{media.SessionToken}/{media.ContentVersion}/{media.State}/{media.Connected}/{media.Title}/{media.Artist}/{media.Album}/{(media.Cover is null ? 0 : RuntimeHelpers.GetHashCode(media.Cover))}/{media.Capabilities}/{foreground}/{secondary}/{accent}/{highContrast}/{lightInk}/{pressed}/{hoveredAction}/{dpi}";
+        return $"{layout.CanvasWidth}/{layout.CanvasHeight}/{layout.ScrollX}/{layout.ScrollY}/{calendarMonth:yyyyMM}/{now:yyyyMMddHHmm}/{CultureInfo.CurrentCulture.DateTimeFormat.ShortTimePattern}/{media.SessionToken}/{media.ContentVersion}/{media.State}/{media.Connected}/{media.Title}/{media.Artist}/{media.Album}/{(media.Cover is null ? 0 : RuntimeHelpers.GetHashCode(media.Cover))}/{media.Capabilities}/{weather.Status}/{weather.PlaceName}/{weather.AutoLocated}/{weather.TemperatureC}/{weather.ApparentTemperatureC}/{weather.HumidityPercent}/{weather.WeatherCode}/{weather.IsDay}/{weather.TodayMaxC}/{weather.TodayMinC}/{weather.FetchedAt}/{weather.Message}/{foreground}/{secondary}/{accent}/{highContrast}/{lightInk}/{pressed}/{hoveredAction}/{dpi}";
     }
 
     static bool IsLightInk(uint color)
@@ -339,7 +341,7 @@ internal sealed class HomeVisual : IDisposable
 
     List<SurfaceOp> DashboardOperations(HomePresentationLayout layout, MediaSnapshot media, DateTimeOffset now,
         DateTime calendarMonth, float progress, int pressed, int hoveredAction,
-        bool highContrast, bool lightInk, uint foreground, uint secondary, uint accent)
+        bool highContrast, bool lightInk, uint foreground, uint secondary, uint accent, WeatherSnapshot weather)
     {
         _ = progress;
         uint quiet = highContrast ? foreground : secondary;
@@ -353,20 +355,86 @@ internal sealed class HomeVisual : IDisposable
         }
         void Card(FloatRect rect) { _ = rect; } // Layer2 shape submission belongs to NativeWidgetHost.SetGlassScene, not a painted Round.
 
-        var weather = layout.Weather;
-        Card(weather);
-        Text("天气", TextRole.Label, weather.X + 14, weather.Y + 12, weather.Width - 28, 20, weatherInk);
-        Ellipse(operations, weather.X + weather.Width / 2 - 25, weather.Y + 66, 20, 20, weatherQuiet);
-        Ellipse(operations, weather.X + weather.Width / 2 - 8, weather.Y + 58, 27, 28, weatherQuiet);
-        Ellipse(operations, weather.X + weather.Width / 2 + 13, weather.Y + 68, 18, 18, weatherQuiet);
-        operations.Add(Round(weather.X + weather.Width / 2 - 24, weather.Y + 73, 50, 17, 8, weatherQuiet));
-        Text("—°", TextRole.WidgetValue, weather.X + 16, weather.Y + 101, weather.Width - 32, 48, weatherInk, true);
-        Text("暂未接入天气", TextRole.Caption, weather.X + 14, weather.Bottom - 54, weather.Width - 28, 20, weatherInk);
-        Text("稍后提供实时天气", TextRole.Caption, weather.X + 14, weather.Bottom - 31, weather.Width - 28, 16, weatherQuiet);
-        Text(now.ToString("M月d日", CultureInfo.GetCultureInfo("zh-CN")), TextRole.Caption,
-            layout.ClockDate.X, layout.ClockDate.Y, layout.ClockDate.Width, 18, weatherQuiet);
+        var weatherCard = layout.Weather;
+        Card(weatherCard);
+        var placeRect = layout.WeatherPlace;
+        var iconRect = layout.WeatherIcon;
+        var temperatureRect = layout.WeatherTemperature;
+        var conditionRect = layout.WeatherCondition;
+        var rangeRect = layout.WeatherRange;
+        var detailRect = layout.WeatherDetail;
+        var footerRect = layout.WeatherFooter;
+        if (weather.HasData && (weather.Status == WeatherStatus.Ready || weather.Status == WeatherStatus.Stale))
+        {
+            float placeX = placeRect.X, placeWidth = placeRect.Width;
+            if (weather.AutoLocated)
+            {
+                operations.Add(Glyph("\uE81D", placeRect.X, placeRect.Y + 4, 12, weatherQuiet));
+                placeX += 16; placeWidth -= 16;
+            }
+            Text(weather.PlaceName ?? "天气", TextRole.Label, placeX, placeRect.Y,
+                placeWidth, placeRect.Height, weatherInk);
+            DrawWeatherIcon(operations, WeatherCodes.Icon(weather.WeatherCode), weather.IsDay,
+                iconRect, highContrast, foreground);
+            if (weather.TemperatureC is double temperature && double.IsFinite(temperature))
+                Text(Math.Round(temperature, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture) + "°",
+                    TextRole.WidgetValue, temperatureRect.X, temperatureRect.Y,
+                    temperatureRect.Width, temperatureRect.Height, weatherInk);
+            Text(WeatherCodes.ChineseText(weather.WeatherCode), TextRole.Label, conditionRect.X,
+                conditionRect.Y, conditionRect.Width, conditionRect.Height, weatherInk);
+            if (weather.TodayMaxC is double maximum && double.IsFinite(maximum)
+                && weather.TodayMinC is double minimum && double.IsFinite(minimum))
+            {
+                string maximumText = Math.Round(maximum, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture);
+                string minimumText = Math.Round(minimum, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture);
+                Text($"最高 {maximumText}° · 最低 {minimumText}°", TextRole.Caption,
+                    rangeRect.X, rangeRect.Y, rangeRect.Width, rangeRect.Height, weatherQuiet);
+            }
+            string detail = "";
+            if (weather.ApparentTemperatureC is double apparent && double.IsFinite(apparent))
+                detail = "体感 " + Math.Round(apparent, MidpointRounding.AwayFromZero)
+                    .ToString("0", CultureInfo.InvariantCulture) + "°";
+            if (weather.HumidityPercent is int humidity)
+                detail += (detail.Length > 0 ? " · " : "") + $"湿度 {humidity}%";
+            if (detail.Length > 0)
+                Text(detail, TextRole.Caption, detailRect.X, detailRect.Y,
+                    detailRect.Width, detailRect.Height, weatherQuiet);
+            if (weather.FetchedAt is DateTimeOffset fetchedAt)
+            {
+                string footer = weather.Status == WeatherStatus.Ready
+                    ? $"更新于 {fetchedAt.ToLocalTime():HH:mm}"
+                    : $"{weather.Message ?? "未能更新"} · {fetchedAt.ToLocalTime():HH:mm}";
+                Text(footer, TextRole.Caption, footerRect.X, footerRect.Y,
+                    footerRect.Width, footerRect.Height,
+                    weather.Status == WeatherStatus.Ready || highContrast ? weatherQuiet : 0xB3FFFFFFu);
+            }
+        }
+        else
+        {
+            Text(weather.PlaceName ?? "天气", TextRole.Label, placeRect.X, placeRect.Y,
+                placeRect.Width, placeRect.Height, weatherInk);
+            DrawWeatherIcon(operations, WeatherIconKind.Unknown, weather.IsDay,
+                iconRect, highContrast, foreground);
+            Text("—°", TextRole.WidgetValue, temperatureRect.X, temperatureRect.Y,
+                temperatureRect.Width, temperatureRect.Height, weatherInk);
+            (string main, string? secondaryMessage) = weather.Status switch
+            {
+                WeatherStatus.Disabled => ("天气已关闭", "可在设置 → 天气中开启"),
+                WeatherStatus.Loading => ("正在获取天气…", (string?)null),
+                WeatherStatus.NeedsLocation => ("未选择城市", weather.Message ?? "请在设置 → 天气中选择"),
+                WeatherStatus.Unavailable => ("天气暂不可用", weather.Message ?? "稍后自动重试"),
+                _ => ("天气暂不可用", weather.Message ?? "稍后自动重试")
+            };
+            Text(main, TextRole.Label, conditionRect.X, conditionRect.Y,
+                conditionRect.Width, conditionRect.Height, weatherInk);
+            if (secondaryMessage is not null)
+                Text(secondaryMessage, TextRole.Caption, rangeRect.X, rangeRect.Y,
+                    rangeRect.Width, rangeRect.Height, weatherQuiet);
+        }
+        Text(now.ToString("M月d日", CultureInfo.GetCultureInfo("zh-CN")), TextRole.SectionTitle,
+            layout.ClockDate.X, layout.ClockDate.Y, layout.ClockDate.Width, 24, weatherInk);
         Text(now.ToString("dddd", CultureInfo.GetCultureInfo("zh-CN")), TextRole.Caption,
-            layout.ClockDate.X, layout.ClockDate.Y + 20, layout.ClockDate.Width, 18, weatherQuiet);
+            layout.ClockDate.X, layout.ClockDate.Y + 24, layout.ClockDate.Width, 16, weatherQuiet);
 
         var calendar = layout.Calendar;
         Card(calendar);
@@ -442,12 +510,13 @@ internal sealed class HomeVisual : IDisposable
         string titleText = media.Connected
             ? string.IsNullOrWhiteSpace(media.Title) ? "歌曲信息暂不可用" : media.Title
             : "尚未连接音乐";
-        Text(titleText, TextRole.Label, title.X, title.Y, title.Width, title.Height, foreground);
+        Text(titleText, TextRole.Label, title.X, title.Y, title.Width, title.Height, foreground, true);
         if (media.Connected)
             Text(string.IsNullOrWhiteSpace(media.Artist) ? "歌手信息暂不可用" : media.Artist,
-                TextRole.Caption, artist.X, artist.Y, artist.Width, artist.Height, quiet);
+                TextRole.Caption, artist.X, artist.Y, artist.Width, artist.Height, quiet, true);
         else
-            Text("连接网易云音乐后显示播放信息", TextRole.Caption, artist.X, artist.Y, artist.Width, artist.Height, quiet);
+            Text("连接网易云音乐后显示播放信息", TextRole.Caption, artist.X, artist.Y,
+                artist.Width, artist.Height, quiet, true);
 
         if (media.Connected)
         {
@@ -472,6 +541,102 @@ internal sealed class HomeVisual : IDisposable
         return Sanitize(operations);
     }
 
+    static void DrawWeatherIcon(List<SurfaceOp> operations, WeatherIconKind kind, bool isDay,
+        FloatRect box, bool highContrast, uint foreground)
+    {
+        float x = box.X, y = box.Y, u = box.Width / 44f;
+        uint Tint(uint color) => highContrast ? foreground : color;
+        uint sun = Tint(0xFFFFD60Au), moon = Tint(0xFFFFE9A8u), cloud = Tint(0xF2FFFFFFu);
+        uint rearCloud = Tint(0x99FFFFFFu), rain = Tint(0xFF64D2FFu), snow = Tint(0xFFFFFFFFu);
+        uint lightning = Tint(0xFFFFD60Au), fog = Tint(0xD9FFFFFFu), unknown = Tint(0x66FFFFFFu);
+
+        void Cloud(float cx, float cy, float width, uint color)
+        {
+            float f = width / 56f;
+            Ellipse(operations, cx, cy + 8f * f, 20f * f, 20f * f, color);
+            Ellipse(operations, cx + 17f * f, cy, 27f * f, 28f * f, color);
+            Ellipse(operations, cx + 38f * f, cy + 10f * f, 18f * f, 18f * f, color);
+            operations.Add(Round(cx + 1f * f, cy + 15f * f, 53f * f, 17f * f, 8.5f * f, color));
+        }
+
+        switch (kind)
+        {
+            case WeatherIconKind.Clear:
+                if (isDay)
+                {
+                    Ellipse(operations, x + 11f * u, y + 11f * u, 22f * u, 22f * u, sun);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        float angle = i * 45f * MathF.PI / 180f;
+                        float diameter = 4f * u;
+                        float centerX = x + 22f * u + MathF.Cos(angle) * 17f * u;
+                        float centerY = y + 22f * u + MathF.Sin(angle) * 17f * u;
+                        Ellipse(operations, centerX - diameter / 2, centerY - diameter / 2,
+                            diameter, diameter, sun);
+                    }
+                }
+                else operations.Add(Glyph("\uE708", x + 8f * u, y + 8f * u, 28f * u, moon));
+                break;
+            case WeatherIconKind.PartlyCloudy:
+                if (isDay)
+                {
+                    Ellipse(operations, x + 4f * u, y + 2f * u, 18f * u, 18f * u, sun);
+                    for (int i = 0; i < 6; i++)
+                    {
+                        float angle = i * 60f * MathF.PI / 180f;
+                        float diameter = 3f * u;
+                        float centerX = x + 13f * u + MathF.Cos(angle) * 13f * u;
+                        float centerY = y + 11f * u + MathF.Sin(angle) * 13f * u;
+                        Ellipse(operations, centerX - diameter / 2, centerY - diameter / 2,
+                            diameter, diameter, sun);
+                    }
+                }
+                else operations.Add(Glyph("\uE708", x + 3f * u, y + 1f * u, 20f * u, moon));
+                Cloud(x + 8f * u, y + 16f * u, 36f * u, cloud);
+                break;
+            case WeatherIconKind.Cloudy:
+                Cloud(x + 12f * u, y + 4f * u, 28f * u, rearCloud);
+                Cloud(x + 2f * u, y + 12f * u, 40f * u, cloud);
+                break;
+            case WeatherIconKind.Fog:
+                for (int k = 0; k < 3; k++)
+                    operations.Add(Round(x + 4f * u, y + (12f + k * 9f) * u,
+                        (k == 1 ? 28f : 36f) * u, 4f * u, 2f * u, fog));
+                break;
+            case WeatherIconKind.Rain:
+                Cloud(x + 4f * u, y + 2f * u, 36f * u, cloud);
+                for (int k = 0; k < 3; k++)
+                    operations.Add(Round(x + (10f + 10f * k) * u, y + 30f * u,
+                        3f * u, 8f * u, 1.5f * u, rain));
+                break;
+            case WeatherIconKind.HeavyRain:
+                Cloud(x + 4f * u, y + 2f * u, 36f * u, cloud);
+                for (int k = 0; k < 4; k++)
+                    operations.Add(Round(x + (7f + 9f * k) * u, y + 29f * u,
+                        3f * u, 11f * u, 1.5f * u, rain));
+                break;
+            case WeatherIconKind.Snow:
+                Cloud(x + 4f * u, y + 2f * u, 36f * u, cloud);
+                for (int k = 0; k < 3; k++)
+                    Ellipse(operations, x + (10f + 10f * k) * u, y + (31f + (k % 2) * 4f) * u,
+                        4.5f * u, 4.5f * u, snow);
+                break;
+            case WeatherIconKind.Sleet:
+                Cloud(x + 4f * u, y + 2f * u, 36f * u, cloud);
+                operations.Add(Round(x + 10f * u, y + 30f * u, 3f * u, 8f * u, 1.5f * u, rain));
+                Ellipse(operations, x + 20f * u, y + 33f * u, 4.5f * u, 4.5f * u, snow);
+                operations.Add(Round(x + 30f * u, y + 30f * u, 3f * u, 8f * u, 1.5f * u, rain));
+                break;
+            case WeatherIconKind.Thunder:
+                Cloud(x + 4f * u, y + 2f * u, 36f * u, cloud);
+                operations.Add(Glyph("\uE945", x + 15f * u, y + 24f * u, 16f * u, lightning));
+                break;
+            default:
+                Cloud(x + 2f * u, y + 10f * u, 40f * u, unknown);
+                break;
+        }
+    }
+
     List<SurfaceOp> StatusOperations(HomePresentationLayout layout, DateTimeOffset now,
         HomeSystemStatusSnapshot status, bool dragging, string? volumeNotice, int pressed, int hoveredAction,
         bool highContrast, bool lightInk, uint foreground, uint secondary)
@@ -489,15 +654,15 @@ internal sealed class HomeVisual : IDisposable
         Text(now.ToString(twelveHour ? "h:mm" : "HH:mm", CultureInfo.CurrentCulture),
             TextRole.SectionTitle, layout.Clock, foreground, flags: TextFlags.TabularNumbers);
 
-        var battery = layout.StatusBattery;
         bool hasBattery = status.HasBattery != false;
+        uint ink = highContrast ? foreground : lightInk ? 0xFFFFFFFFu : 0xFF1C1C1Eu;
         if (hasBattery)
         {
-            float bx = battery.X, by = battery.Y, bw = 25, bh = 12;
-            uint ink = highContrast ? foreground : lightInk ? 0xFFFFFFFFu : 0xFF1C1C1Eu;
-            uint body = highContrast ? secondary : (ink & 0x00FFFFFFu) | 0x59000000u;
-            operations.Add(Round(bx, by, bw, bh, 3.5f, body));
-            operations.Add(Round(bx + bw + 1, by + 3.75f, 1.5f, 4.5f, .75f, (ink & 0x00FFFFFFu) | 0x66000000u));
+            var battery = layout.StatusBattery;
+            float bx = battery.X, by = battery.Y, bw = 27, bh = 13;
+            uint batteryTrack = highContrast ? secondary : (ink & 0x00FFFFFFu) | 0x8C000000u;
+            operations.Add(Round(bx, by, bw, bh, 4, batteryTrack));
+            operations.Add(Round(bx + bw + 1, by + 4.25f, 1.5f, 4.5f, .75f, batteryTrack));
             if (status.HasBattery == true && status.BatteryPercent0To100 is byte percent && percent <= 100)
             {
                 bool charging = status.Charging == true;
@@ -505,13 +670,24 @@ internal sealed class HomeVisual : IDisposable
                     : charging ? (lightInk ? 0xFF30D158u : 0xFF34C759u)
                     : percent <= 20 ? (lightInk ? 0xFFFF453Au : 0xFFFF3B30u)
                     : ink;
-                float levelWidth = (bw - 4) * percent / 100f;
-                if (levelWidth >= .5f)
-                    operations.Add(Round(bx + 2, by + 2, levelWidth, bh - 4, Math.Min(2f, levelWidth / 2), level));
-                if (charging)
-                    operations.Add(Glyph("\uE945", bx + (bw - 9) / 2, by + (bh - 9) / 2, 9,
-                        lightInk && !highContrast ? 0xFF1C1C1Eu : 0xFFFFFFFFu));
+                float levelWidth = bw * percent / 100f;
+                if (levelWidth >= 1)
+                    operations.Add(Round(bx, by, levelWidth, bh, Math.Min(4f, levelWidth / 2), level));
+                bool lightNumberBackground = highContrast ? IsLightInk(foreground)
+                    : (charging || percent <= 20) ? false : lightInk;
+                uint numberInk = lightNumberBackground ? 0xFF1C1C1Eu : 0xFFFFFFFFu;
+                operations.Add(SurfaceOp.Typography(percent.ToString(CultureInfo.InvariantCulture), TextRole.Caption,
+                    bx, by, bw, bh, numberInk, center: true, numericFlags: TextFlags.TabularNumbers, locale: "en-US")
+                    with { FontSize = 9.5f, FontWeight = 700 });
             }
+        }
+        if (hasBattery && status.OnAc == true)
+        {
+            var plug = layout.StatusPlug;
+            operations.Add(Round(plug.X, plug.Y + 5.25f, 3.5f, 1.5f, .75f, ink));
+            operations.Add(Round(plug.X + 3, plug.Y + 2.5f, 5, 7, 1.5f, ink));
+            operations.Add(Round(plug.X + 8, plug.Y + 3.75f, 3, 1.3f, .65f, ink));
+            operations.Add(Round(plug.X + 8, plug.Y + 6.95f, 3, 1.3f, .65f, ink));
         }
 
         var bar = layout.VolumeBar;

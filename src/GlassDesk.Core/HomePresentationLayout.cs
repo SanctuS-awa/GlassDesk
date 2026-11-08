@@ -20,14 +20,36 @@ public sealed record HomePresentationLayout(float Width, float Height, float Scr
     public bool CanShowFolderPopover => Width >= 480 && Height >= 320;
 
     public FloatRect Weather => Standard
-        ? new(28, 130, 176, 224)
-        : new(20, 102, 148, 204);
+        ? new(32, 92, 176, 248)
+        : new(24, 76, 152, 220);
     public FloatRect Calendar => Standard
-        ? new(220, 116, 256, 292)
-        : new(184, 92, 224, 268);
+        ? new(224, 92, 256, 300)
+        : new(188, 76, 228, 270);
     public FloatRect Media => Standard
-        ? new(528, 104, 280, 316)
-        : new(448, 80, 248, 292);
+        ? new(644, 92, 260, 300)
+        : new(532, 76, 232, 270);
+
+    public FloatRect WeatherPlace => Standard
+        ? new(Weather.X + 16, Weather.Y + 12, Weather.Width - 32, 20)
+        : new(Weather.X + 14, Weather.Y + 10, Weather.Width - 28, 20);
+    public FloatRect WeatherIcon => Standard
+        ? new(Weather.X + 16, Weather.Y + 42, 44, 44)
+        : new(Weather.X + 14, Weather.Y + 36, 38, 38);
+    public FloatRect WeatherTemperature => Standard
+        ? new(Weather.X + 14, Weather.Y + 92, Weather.Width - 28, 48)
+        : new(Weather.X + 12, Weather.Y + 78, Weather.Width - 24, 44);
+    public FloatRect WeatherCondition => Standard
+        ? new(Weather.X + 16, Weather.Y + 142, Weather.Width - 32, 20)
+        : new(Weather.X + 14, Weather.Y + 124, Weather.Width - 28, 20);
+    public FloatRect WeatherRange => Standard
+        ? new(Weather.X + 16, Weather.Y + 166, Weather.Width - 32, 16)
+        : new(Weather.X + 14, Weather.Y + 146, Weather.Width - 28, 16);
+    public FloatRect WeatherDetail => Standard
+        ? new(Weather.X + 16, Weather.Y + 186, Weather.Width - 32, 16)
+        : new(Weather.X + 14, Weather.Y + 164, Weather.Width - 28, 16);
+    public FloatRect WeatherFooter => Standard
+        ? new(Weather.X + 16, Weather.Bottom - 30, Weather.Width - 32, 16)
+        : new(Weather.X + 14, Weather.Bottom - 26, Weather.Width - 28, 16);
 
     /// <summary>iPhone 式音量细条：只画这一根，贴面板右边缘。</summary>
     public FloatRect VolumeBar
@@ -46,9 +68,13 @@ public sealed record HomePresentationLayout(float Width, float Height, float Scr
     public FloatRect VolumeTrack => VolumeBar;
 
     public FloatRect Clock => new(20, 12, 72, 24);
-    public FloatRect ClockDate => new(Standard ? 32 : 24, Standard ? 364 : 308, 160, 44);
-    public FloatRect StatusBattery => new(Math.Max(0, Width - 47.5f), 18, 27.5f, 12);
+    public FloatRect ClockDate => Standard
+        ? new(36, 352, 168, 44)
+        : new(28, 304, 148, 44);
+    public FloatRect StatusBattery => new(Math.Max(0, Width - 49.5f), 17.5f, 27, 13);
+    public FloatRect StatusPlug => new(Math.Max(0, Width - 64.5f), 18, 11, 12);
     public FloatRect StatusWifi => new(Math.Max(0, Width - 73.5f), 18, 18, 12);
+    public FloatRect StatusWifiWithPlug => new(Math.Max(0, Width - 88.5f), 18, 18, 12);
     /// <summary>台式机无电池时 Wi‑Fi 右移到电池位置。</summary>
     public FloatRect StatusWifiNoBattery => new(Math.Max(0, Width - 38), 18, 18, 12);
 
@@ -127,26 +153,26 @@ public sealed record HomePresentationLayout(float Width, float Height, float Scr
     }
 
     public FloatRect MediaCover => Standard
-        ? new(Media.X + 76, Media.Y + 36, 128, 128)
-        : new(Media.X + 72, Media.Y + 32, 104, 104);
+        ? new(Media.X + 66, Media.Y + 40, 128, 128)
+        : new(Media.X + 64, Media.Y + 34, 104, 104);
     public FloatRect MediaTitle => Standard
-        ? new(Media.X + 16, Media.Y + 172, 248, 22)
-        : new(Media.X + 16, Media.Y + 143, 216, 20);
+        ? new(Media.X + 16, Media.Y + 180, 228, 22)
+        : new(Media.X + 14, Media.Y + 148, 204, 20);
     public FloatRect MediaArtist => Standard
-        ? new(Media.X + 16, Media.Y + 198, 248, 18)
-        : new(Media.X + 16, Media.Y + 165, 216, 18);
+        ? new(Media.X + 16, Media.Y + 204, 228, 18)
+        : new(Media.X + 14, Media.Y + 170, 204, 18);
     public FloatRect MediaTrack => Standard
-        ? new(Media.X + 24, Media.Y + 226, 232, 3)
-        : new(Media.X + 20, Media.Y + 194, 208, 3);
+        ? new(Media.X + 24, Media.Y + 226, 212, 3)
+        : new(Media.X + 20, Media.Y + 194, 192, 3);
     public FloatRect MediaElapsed => Standard
         ? new(Media.X + 24, Media.Y + 233, 70, 14)
         : new(Media.X + 20, Media.Y + 201, 64, 14);
     public FloatRect MediaDuration => Standard
-        ? new(Media.X + 186, Media.Y + 233, 70, 14)
-        : new(Media.X + 164, Media.Y + 201, 64, 14);
+        ? new(Media.X + 166, Media.Y + 233, 70, 14)
+        : new(Media.X + 148, Media.Y + 201, 64, 14);
     public MediaControlsRow MediaControls => MediaControlsRowLayout.Resolve(
-        Standard ? Media.X + 140 : Media.X + 124,
-        Standard ? Media.Y + 282 : Media.Y + 258,
+        Standard ? Media.X + 130 : Media.X + 116,
+        Standard ? Media.Y + 262 : Media.Y + 230,
         44, 26);
     public FloatRect MediaPrevious => MediaControls.Previous;
     public FloatRect MediaToggle => MediaControls.Toggle;

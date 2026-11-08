@@ -25,3 +25,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Data sources / 数据来源
+
+Open-Meteo weather data (https://open-meteo.com/) is fetched online at runtime under CC BY 4.0 and is not distributed with the installer. 中国行政区划名称与中心点坐标来自阿里云 DataV.GeoAtlas (https://datav.aliyun.com/portal/school/atlas/area_selector)，以内嵌的 china-regions.json 随 GlassDesk.Platform.dll 分发，仅用于城市选择与就近匹配。Approximate IP location is queried at runtime from myip.ipip.net and ipwho.is; neither service is distributed with the installer. Open-Meteo、myip.ipip.net 与 ipwho.is 均仅在运行时联网查询。

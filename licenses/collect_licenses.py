@@ -19,7 +19,7 @@ locked = json.loads((ROOT / "src/GlassDesk.App/packages.lock.json").read_text(en
 dependencies = locked["dependencies"]["net10.0-windows10.0.26100"]
 packages = [(name, item["resolved"]) for name, item in dependencies.items() if item["type"] != "Project"]
 packages.extend([("Microsoft.NETCore.App.Runtime.win-x64", "10.0.12"), ("Microsoft.Windows.SDK.NET.Ref", "10.0.26100.57")])
-manifest = {"schemaVersion": 1, "appVersion": "0.2.1.3-beta", "capturedDate": "2026-10-12", "packages": [], "files": []}
+manifest = {"schemaVersion": 1, "appVersion": "0.2.2", "capturedDate": "2026-10-12", "packages": [], "files": []}
 runtime_license_paths = []
 build_only = {"Microsoft.Windows.SDK.BuildTools", "Microsoft.Windows.SDK.BuildTools.MSIX"}
 
@@ -105,7 +105,7 @@ remember(glasswork_license,
          "Glasswork", "4f0b6744b898b3a9b98fbd913ab24fdb83c53162")
 runtime_license_paths.append(glasswork_license)
 seen = set()
-terms = ["GlassDesk 0.2.1.3 beta - 随附第三方组件许可条款 / Bundled third-party component terms\n\n"
+terms = ["GlassDesk 0.2.2 - 随附第三方组件许可条款 / Bundled third-party component terms\n\n"
          "安装即表示同意遵守以下条款中适用于随附第三方组件的规定。完整第三方声明保存在安装目录的 licenses 文件夹。"
          "本文件不授予或更改 GlassDesk 自身源代码的许可，也不改变开源组件许可授予的权利。\n\n"
          "By installing, you agree to the following terms as applicable to the bundled third-party components. "
@@ -120,7 +120,7 @@ for path in runtime_license_paths:
     terms.append("\n\n" + "=" * 72 + "\n" + path.relative_to(ROOT).as_posix() + "\n" + "=" * 72 + "\n\n" + contents.decode("utf-8-sig"))
 terms_file = DESTINATION / "installer-third-party-terms.txt"
 terms_file.write_text("\n".join(terms), encoding="utf-8-sig")
-remember(terms_file, "Concatenation of preserved applicable licenses listed in this file", "Installer component license acceptance", "0.2.1.3-beta", "combined original texts with explanatory introduction")
+remember(terms_file, "Concatenation of preserved applicable licenses listed in this file", "Installer component license acceptance", "0.2.2", "combined original texts with explanatory introduction")
 (DESTINATION / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(json.dumps({"packages": len(manifest["packages"]), "files": len(manifest["files"]), "installerTermsBytes": terms_file.stat().st_size,
                   "manifest": "licenses/manifest.json"}, indent=2))

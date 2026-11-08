@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.1.3beta"
+  #define AppVersion "0.2.2"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\artifacts\GlassDesk"
@@ -9,8 +9,8 @@
 AppId={{85C98BA3-7C50-4C1A-8627-E611BC6251AF}
 AppName=GlassDesk
 AppVersion={#AppVersion}
-VersionInfoVersion=0.2.1.3
-VersionInfoProductVersion=0.2.1.3
+VersionInfoVersion=0.2.2.0
+VersionInfoProductVersion=0.2.2.0
 AppPublisher=GlassDesk
 AppCopyright=MIT, GlassDesk contributors
 AppPublisherURL=https://github.com/SanctuS-awa/GlassDesk
@@ -31,7 +31,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\GlassDesk.exe
-UninstallDisplayName=GlassDesk 0.2.1.3 beta
+UninstallDisplayName=GlassDesk 0.2.2
 CloseApplications=no
 RestartApplications=no
 SetupLogging=yes

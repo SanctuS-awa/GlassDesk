@@ -1,6 +1,6 @@
 # 构建与检查
 
-当前应用版本由根目录 `Directory.Build.props` 决定，为 **0.2.1.3 beta**（版本字段为 `0.2.1.3-beta`）。最低声明为 Windows 11 Build 22621 x64；声明最低版本不等于已在干净机器验证。
+当前应用版本由根目录 `Directory.Build.props` 决定，为 **0.2.2**（版本字段为 `0.2.2`）。最低声明为 Windows 11 Build 22621 x64；声明最低版本不等于已在干净机器验证。
 
 ## 工具链
 
@@ -54,7 +54,7 @@ winget install JRSoftware.InnoSetup
 
 脚本会在 `artifacts\GlassDesk\GlassDesk.exe` 不存在时先编译应用；传入 `/rebuild` 可强制重新编译。安装包及其 SHA-256 校验文件输出到 `artifacts\installer`：
 
-- `GlassDesk-0.2.1.3beta-win-x64-setup.exe`
-- `GlassDesk-0.2.1.3beta-win-x64-setup.exe.sha256`，内容格式为 `<hash>  <文件名>`。
+- `GlassDesk-0.2.2-win-x64-setup.exe`
+- `GlassDesk-0.2.2-win-x64-setup.exe.sha256`，内容格式为 `<hash>  <文件名>`。
 
 `scripts/build-release.ps1` 保留为完整发布候选流程：它执行原生构建、锁定还原、自包含发布、检查项目构建和安装包打包，并可用 `-RunChecks` 在指定的独立 Windows 机器上运行完整检查。它默认查找仓库内的 Inno Setup 7.1.0 编译器，也可通过 `-CompilerPath` 指定 ISCC.exe。GitHub Actions 工作流单独执行 CI 构建与隔离检查，不调用此脚本，也不自动发布安装包。

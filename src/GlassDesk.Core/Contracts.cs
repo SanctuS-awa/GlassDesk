@@ -144,7 +144,8 @@ public sealed record WidgetPreferences
     public bool LiquidGlassEnabled {get;init;}
     public LiquidGlassPreferences LiquidGlass {get;init;}=new();
     public PluginEnableMap PluginEnabled {get;init;}=new();
-    public WidgetPreferences Validated()=>this with {Version=4,LastDetailsPageId=Version<4?DetailsPageController.Home:DetailsPageController.Normalize(LastDetailsPageId),Blur=Math.Clamp(Blur,0,40),TintOpacity=Math.Clamp(TintOpacity,.10f,.90f),HoverDelayMs=Math.Clamp(HoverDelayMs,100,1500),LeaveDelayMs=Math.Clamp(LeaveDelayMs,100,1500),MonitorId=null,AnchorX=.5,AnchorY=0,CompanionColor=CompanionColor|0xff000000u,CompanionAppearanceId=CompanionAppearanceIds.Normalize(CompanionAppearanceId),ClockFontId=ClockFontCatalog.Normalize(ClockFontId),TextInk=TextInk is WidgetTextInk.Black or WidgetTextInk.White?TextInk:WidgetTextInk.Black,LiquidGlass=(LiquidGlass??new()).Validated(),PluginEnabled=PluginEnabled is null?new():new(PluginEnabled)};
+    public WeatherPreferences Weather {get;init;}=new();
+    public WidgetPreferences Validated()=>this with {Version=4,LastDetailsPageId=Version<4?DetailsPageController.Home:DetailsPageController.Normalize(LastDetailsPageId),Blur=Math.Clamp(Blur,0,40),TintOpacity=Math.Clamp(TintOpacity,.10f,.90f),HoverDelayMs=Math.Clamp(HoverDelayMs,100,1500),LeaveDelayMs=Math.Clamp(LeaveDelayMs,100,1500),MonitorId=null,AnchorX=.5,AnchorY=0,CompanionColor=CompanionColor|0xff000000u,CompanionAppearanceId=CompanionAppearanceIds.Normalize(CompanionAppearanceId),ClockFontId=ClockFontCatalog.Normalize(ClockFontId),TextInk=TextInk is WidgetTextInk.Black or WidgetTextInk.White?TextInk:WidgetTextInk.Black,LiquidGlass=(LiquidGlass??new()).Validated(),PluginEnabled=PluginEnabled is null?new():new(PluginEnabled),Weather=(Weather??new()).Validated()};
 }
 public readonly record struct ScreenRect(int X,int Y,int Width,int Height)
 {
