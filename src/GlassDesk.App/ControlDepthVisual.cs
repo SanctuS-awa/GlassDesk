@@ -12,7 +12,7 @@ internal enum ControlDepthKind { Plate, InsetTrack, Thumb, SoftBar }
 /// </summary>
 internal sealed class ControlDepthVisual : IDisposable
 {
-    readonly Compositor _compositor;
+    readonly CompositionSpring _spring;
     readonly ControlDepthKind _kind;
     readonly ContainerVisual _relief;
     readonly ShapeVisual _face;
@@ -31,10 +31,11 @@ internal sealed class ControlDepthVisual : IDisposable
     bool _appearanceSet, _highContrast, _hovered, _pressed, _reducedMotion, _feedbackSet, _disposed;
 
     public ContainerVisual Visual { get; }
+    public bool MotionActive => _spring.Active;
 
     public ControlDepthVisual(Compositor compositor, ControlDepthKind kind = ControlDepthKind.Plate)
     {
-        _compositor = compositor; _kind = kind;
+        _kind = kind; _spring = new(compositor);
         Visual = compositor.CreateContainerVisual();
         _relief = compositor.CreateContainerVisual();
         _contact = compositor.CreateShapeVisual();
@@ -154,17 +155,7 @@ internal sealed class ControlDepthVisual : IDisposable
 
     void Animate(Visual target, string property, float value, bool animate)
     {
-        if (!animate)
-        {
-            target.StopAnimation(property);
-            if (property == "Offset.Y") target.Offset = new(0, value, 0); else target.Opacity = value;
-            return;
-        }
-        using var easing = _compositor.CreateCubicBezierEasingFunction(new(.22f, 1), new(.36f, 1));
-        using var animation = _compositor.CreateScalarKeyFrameAnimation();
-        animation.InsertExpressionKeyFrame(0, "this.StartingValue"); animation.InsertKeyFrame(1, value, easing);
-        animation.Duration = TimeSpan.FromMilliseconds(_pressed ? 80 : 120);
-        target.StartAnimation(property, animation);
+        _spring.Scalar(target, property, value, !animate, _pressed ? 130 : 240);
     }
 
     static Color ToColor(uint argb) => Color.FromArgb((byte)(argb >> 24), (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb);
@@ -178,6 +169,7 @@ internal sealed class ControlDepthVisual : IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
+        _spring.Dispose();
         _face.StopAnimation("Offset.Y"); _contact.StopAnimation("Opacity");
         Visual.Children.RemoveAll(); _relief.Children.RemoveAll();
         _face.Shapes.Clear(); _contact.Shapes.Clear();

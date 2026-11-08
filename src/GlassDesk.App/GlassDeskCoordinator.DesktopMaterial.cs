@@ -22,7 +22,7 @@ internal sealed partial class GlassDeskCoordinator
 
     bool EnsureExperimentalBodyFits()
     {
-        if(!host.IsLiquidGlassCapture||controller.LogicalLayoutFitsPhysicalBodyLimit!=false)return true;
+        if(!host.IsExperimentalDesktopMaterialCandidate||controller.LogicalLayoutFitsPhysicalBodyLimit!=false)return true;
         // The logical content must not be silently cropped to satisfy the
         // experimental pixel budget. Stop before submitting that presentation.
         StopExperimentalDesktopMaterial(new InvalidOperationException(

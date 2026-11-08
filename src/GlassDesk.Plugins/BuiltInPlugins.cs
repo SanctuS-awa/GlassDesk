@@ -257,9 +257,10 @@ internal sealed class CompanionPlugin : IGlassDeskPlugin
 
 internal sealed class LiquidGlassPlugin : IGlassDeskPlugin
 {
+    public const string LiquidGlassPluginVersion="0.3";
     IPluginContext? context;
     public void Initialize(IPluginContext value)=>context=value;
-    public IEnumerable<IPluginContribution> RegisterContributions()=>[new PluginMaterial("liquidglass","液态玻璃","启用时通过 GPU 桌面捕获渲染折射与色散；关闭时释放捕获资源并恢复系统磨砂。")];
+    public IEnumerable<IPluginContribution> RegisterContributions()=>[new PluginMaterial("liquidglass","液态玻璃",$"{LiquidGlassPluginVersion} · 启用时通过 GPU 桌面捕获渲染分层折射与模糊；关闭时释放捕获资源并恢复系统磨砂。")];
     public ValueTask StartAsync(CancellationToken cancellationToken){context?.SetMaterial("liquidglass",true);return ValueTask.CompletedTask;}
     public ValueTask PauseAsync(CancellationToken cancellationToken){context?.SetMaterial("liquidglass",false);return ValueTask.CompletedTask;}
     public ValueTask StopAsync(CancellationToken cancellationToken)=>PauseAsync(cancellationToken);

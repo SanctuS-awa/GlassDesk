@@ -220,7 +220,7 @@ internal static class QaLiquidGlassStartGate
         }
 
         if (!options.UiPreview || !options.ExplicitDataDirectory || options.DataDirectory is null ||
-            !StringComparer.OrdinalIgnoreCase.Equals(options.IndependentGraphicsMachine, "SHENG-AWA") ||
+            !StringComparer.OrdinalIgnoreCase.Equals(options.IndependentGraphicsMachine, "sheng") ||
             options.QaReport is not null || options.QaCycles != 0 || options.IncidentHostShortTest || options.QuitExisting)
             throw new InvalidOperationException("QA startup gate requires the isolated system-compositor preview launch contract.");
         if (args.Count(a => a == "--system-compositor-preview") != 1 ||

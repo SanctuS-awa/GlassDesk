@@ -58,30 +58,27 @@ jobs:
         with:
           global-json-file: global.json
       - name: Build native Windows components
-        run: |
-          $nativeDirectory = @(./scripts/build-native.ps1 -Configuration Release)[-1]
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "GLASSDESK_NATIVE_DIRECTORY=$nativeDirectory" >> $env:GITHUB_ENV
+        run: ./scripts/build-native.ps1 -Configuration Release
       - name: Restore and publish the self-contained application
         run: |
-          dotnet restore src/GlassDesk.App/GlassDesk.App.csproj -r win-x64 --locked-mode "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIRECTORY"
+          dotnet restore src/GlassDesk.App/GlassDesk.App.csproj --locked-mode
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet publish src/GlassDesk.App/GlassDesk.App.csproj -c Release -r win-x64 --self-contained true --no-restore "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIRECTORY" -p:GlassDeskUiPreview=false -p:PublishSingleFile=false -p:PublishTrimmed=false -o artifacts/ci/publish
+          dotnet publish src/GlassDesk.App/GlassDesk.App.csproj -c Release -r win-x64 --self-contained true --no-restore -p:GlassDeskUiPreview=false -p:PublishSingleFile=false -p:PublishTrimmed=false -o artifacts/ci/publish
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build archived SDK compatibility fixture
         run: |
-          dotnet restore tests/Fixtures/LegacyPlugin/GlassDesk.LegacyPlugin.csproj -r win-x64 --locked-mode
+          dotnet restore tests/Fixtures/LegacyPlugin/GlassDesk.LegacyPlugin.csproj --locked-mode
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet build tests/Fixtures/LegacyPlugin/GlassDesk.LegacyPlugin.csproj -c Release -r win-x64 --no-restore -m:1 -p:BuildInParallel=false -p:AppendRuntimeIdentifierToOutputPath=false
+          dotnet build tests/Fixtures/LegacyPlugin/GlassDesk.LegacyPlugin.csproj -c Release --no-restore -m:1 -p:BuildInParallel=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run isolated console checks
         run: |
           $projects = @('GlassDesk.Core.Tests', 'GlassDesk.PlatformChecks', 'GlassDesk.PluginChecks')
           foreach ($project in $projects) {
             $projectPath = "tests/$project/$project.csproj"
-            dotnet restore $projectPath -r win-x64 --locked-mode "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIRECTORY"
+            dotnet restore $projectPath --locked-mode
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            dotnet run --project $projectPath -c Release -r win-x64 --no-restore -p:AppendRuntimeIdentifierToOutputPath=false "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIRECTORY" -- --no-stress
+            dotnet run --project $projectPath -c Release --no-restore -- --no-stress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 

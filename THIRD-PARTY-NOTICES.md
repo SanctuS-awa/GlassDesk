@@ -1,6 +1,6 @@
-# Third-party components for GlassDesk 0.2.1.1 beta
+# Third-party components for GlassDesk 0.2.1.3beta
 
-This inventory originates from the 2026-10-12 dependency review and is retained as a baseline for 0.2.1.1 beta. The locked runtime versions should be reviewed against the new build before publication. Original license and notice files are preserved under [licenses](licenses/manifest.json), with source identifiers and SHA-256 hashes for the collected texts and package metadata. The license texts govern their respective components; GlassDesk's original source is separately covered by LICENSE.
+The license inventory was captured on 2026-10-12; package versions, source identifiers and SHA-256 hashes are recorded in [licenses/manifest.json](licenses/manifest.json). Review and refresh it when the locked dependencies change. The license texts govern their respective components; GlassDesk's original source is separately covered by LICENSE.
 
 GlassDesk's layout, icons and placeholder artwork were created for this project. Other workspace projects, MyDockFinder binaries, fonts, pictures, themes and song artwork are not part of the distributable.
 
@@ -40,6 +40,10 @@ The preserved App SDK and Windows ML notices include Eigen's MPL 2.0 text and Mi
 ## Visual study references for 0.3.0-preview.1
 
 The independent companion contour/motion, Windows GPU material, and transport transitions were visually studied against [grok-icon-study](https://github.com/blessonism/grok-icon-study), [GlassExplorer](https://github.com/ktiays/GlassExplorer), and [milegelu's Uiverse interaction](https://uiverse.io/milegelu/grumpy-wombat-18). No reference assets, source files, Apple private APIs, or Uiverse CSS are bundled. The Uiverse example supplies short hover/press and icon-change inspiration; the direction-aware album and metadata transition is a separate Composition implementation. These references are not runtime dependencies.
+
+## Liquid glass optics (Glasswork)
+
+The liquid glass plugin's rounded-rectangle lens refraction, separable Gaussian blur, material tint and rim layers (D3D11 shaders in `native/GlassDesk.Native`) and the WebGL2 showcase page `docs/index.html` are ported from and inspired by [Glasswork](https://github.com/kubai087/glasswork) by Kubai087, under the MIT License. The [original license](licenses/Glasswork/LICENSE) (Copyright (c) 2026 Kubai087, from commit `4f0b6744b898b3a9b98fbd913ab24fdb83c53162`) is preserved. Glasswork's source files, assets and dependencies are not bundled; GlassDesk captures the desktop on the GPU only.
 
 ## Build-only components
 

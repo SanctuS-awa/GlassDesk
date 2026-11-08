@@ -2,10 +2,11 @@ using System.Numerics;
 
 namespace GlassDesk.Core;
 
-/// <summary>Legacy grid geometry retained for older layout helpers. Runtime Dock geometry is in HomePresentationLayout.</summary>
+/// <summary>Legacy 360 DIP grid geometry. The horizontal Home dashboard uses DashboardWidth.</summary>
 public static class HomeLayout
 {
     public const float Width = 360, Height = 512;
+    public const float DashboardWidth = 960;
     public const float Inset = 18;
     public const float GridTop = 64;
 
@@ -18,10 +19,10 @@ public static class HomeLayout
     public const float NavWidth = CellWidth * NavColumnSpan + ColumnGap;
     public const float NavHeight = CellHeight * NavRowSpan + RowGap;
 
-    public const float DockX = 20, DockY = 440, DockWidth = 320, DockHeight = 56;
+    public const float DockX = 354, DockY = 444, DockWidth = 252, DockHeight = 44;
     public const float FolderSize = 44;
-    /// <summary>Centres of the three folder buttons inside the dock (review §6.3).</summary>
-    public static readonly IReadOnlyList<float> FolderCenters = new[] { 124f, 180f, 236f };
+    /// <summary>Centres of the three 44 DIP dock slots, relative to the dock left edge.</summary>
+    public static readonly IReadOnlyList<float> FolderCenters = new[] { 36f, 98f, 160f };
 
     public const float PopoverX = 24, PopoverY = 220, PopoverWidth = 312, PopoverHeight = 208;
     public const float PopoverInset = 12;
@@ -89,7 +90,7 @@ public static class HomeLayout
     {
         if (index < 0 || index >= FolderCenters.Count) throw new ArgumentOutOfRangeException(nameof(index));
         float center = FolderCenters[index];
-        return new(center - FolderSize / 2, DockY + (DockHeight - FolderSize) / 2, FolderSize, FolderSize);
+        return new(DockX + center - FolderSize / 2, DockY + (DockHeight - FolderSize) / 2, FolderSize, FolderSize);
     }
 
     public static FloatRect Popover => new(PopoverX, PopoverY, PopoverWidth, PopoverHeight);

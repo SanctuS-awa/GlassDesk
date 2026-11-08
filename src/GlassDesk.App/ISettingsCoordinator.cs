@@ -12,6 +12,7 @@ public interface ISettingsCoordinator
     bool UsesLiquidGlassCapture=>false;
     Windows.Graphics.IGeometrySource2D? CreatePreviewGeometry(System.Numerics.Vector2[] points)=>null;
     void PreviewCompanionAppearance(uint color,string appearanceId) { }
+    void PreviewLiquidGlass(LiquidGlassPreferences preferences) { }
     WidgetPreferences Preferences { get; }
     MediaSnapshot Media { get; }
     string Status { get; }

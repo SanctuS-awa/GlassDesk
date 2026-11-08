@@ -15,12 +15,12 @@ internal static class DesktopMaterialLaunch
         if(!common)return false;
         if(previewIntent)
             return LaunchOptions.LiquidGlassCapturePreviewBuild
-                &&string.Equals(machineName,"SHENG-AWA",StringComparison.OrdinalIgnoreCase);
-        return (!string.Equals(machineName,"SHENG-AWA",StringComparison.OrdinalIgnoreCase)
+                &&string.Equals(machineName,"sheng",StringComparison.OrdinalIgnoreCase);
+        return (!string.Equals(machineName,"sheng",StringComparison.OrdinalIgnoreCase)
                 ||options.IncidentHostShortTest&&options.QaReport is not null&&options.QaCycles==4)
             &&(!options.LiquidGlassCaptureGlass
                 ||options.IncidentHostShortTest&&options.QaReport is not null&&options.QaCycles==4
-                    &&string.Equals(machineName,"SHENG-AWA",StringComparison.OrdinalIgnoreCase));
+                    &&string.Equals(machineName,"sheng",StringComparison.OrdinalIgnoreCase));
     }
 
     public static void Validate(LaunchOptions options)
@@ -40,14 +40,14 @@ internal static class DesktopMaterialLaunch
         if(previewIntent&&!LaunchOptions.LiquidGlassCapturePreviewBuild)
             throw new InvalidOperationException("系统合成器持续预览仅在 GlassDeskUiPreview 与 GlassDeskLiquidGlassPreview 同时启用的开发构建中可用。");
         if(previewIntent&&(!options.UiPreview||!options.ExplicitDataDirectory||options.DataDirectory is null
-            ||!string.Equals(options.IndependentGraphicsMachine,"SHENG-AWA",StringComparison.OrdinalIgnoreCase)
+            ||!string.Equals(options.IndependentGraphicsMachine,"sheng",StringComparison.OrdinalIgnoreCase)
             ||options.IncidentHostShortTest||options.QaReport is not null||options.QaCycles!=0))
-            throw new InvalidOperationException("系统合成器持续预览必须使用 SHENG-AWA、显式独立预览数据目录，并关闭短测与 QA 周期。");
+            throw new InvalidOperationException("系统合成器持续预览必须使用 sheng、显式独立预览数据目录，并关闭短测与 QA 周期。");
         if(options.LiquidGlassCaptureGlass&&!options.IncidentHostShortTest)
             throw new InvalidOperationException("系统合成器候选仅允许使用现有事故主机短测授权。");
         if(options.IncidentHostShortTest&&(!options.UiPreview||!options.ExplicitDataDirectory
             ||options.DataDirectory is null||options.QaReport is null||options.QaCycles!=4
-            ||!string.Equals(Environment.MachineName,"SHENG-AWA",StringComparison.OrdinalIgnoreCase)
+            ||!string.Equals(Environment.MachineName,"sheng",StringComparison.OrdinalIgnoreCase)
             ||!options.OwnedImageGlass&&!options.LiquidGlassCaptureGlass&&!options.ArmOwnedImageGlass))
             throw new InvalidOperationException("授权本机短测必须使用独立预览数据、QA 报告、4 次慢速胶囊/小展开转换与一次性熔断授权。");
         if(selectedModes==0)return;

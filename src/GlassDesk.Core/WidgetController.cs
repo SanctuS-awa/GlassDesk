@@ -15,7 +15,7 @@ public sealed class WidgetController
     private CapsuleContentMode capsuleMode=CapsuleContentMode.Clock;
     private bool mediaConnected,companion=true;
     private float musicCapsuleWidth=256;
-    private float? detailsPageHeight;
+    private float? detailsPageWidth,detailsPageHeight;
     private float? physicalBodyLimitPixels;
     public WidgetForm Form {get;private set;}=WidgetForm.Capsule;
     public bool Visible {get;private set;}=true;
@@ -39,7 +39,7 @@ public sealed class WidgetController
     {
         if(!monitor.Primary)throw new ArgumentException("Widget placement requires the primary monitor.",nameof(monitor));
         this.preferences=preferences.Validated();this.monitor=monitor;this.anchor=FixedAnchor(monitor);
-        ClampAnchor(); Motion=new(TargetPose());
+        ClampAnchor(); Motion=new(TargetPose()); Motion.SetPoseConstraint(ConstrainPresentationPose);
     }
     private float Scale=>monitor.Scale>0?monitor.Scale:1;
     private static WidgetAnchor FixedAnchor(MonitorDescriptor value)
@@ -49,17 +49,28 @@ public sealed class WidgetController
         get
         {
             var metrics=WidgetLayoutMetrics.Resolve(Form,Form==WidgetForm.Capsule?capsuleMode:mediaConnected?CapsuleContentMode.Music:CapsuleContentMode.Clock,companion,musicCapsuleWidth);
-            if (Form == WidgetForm.Details && detailsPageHeight is float height) return metrics with { Width=360, Height=height };
+            if (Form == WidgetForm.Details && (detailsPageWidth.HasValue || detailsPageHeight.HasValue))
+                return metrics with
+                {
+                    Width=detailsPageWidth ?? metrics.Width,
+                    Height=detailsPageHeight ?? metrics.Height,
+                    Radius=detailsPageWidth.HasValue ? 32 : metrics.Radius
+                };
             // The music Details page is a fixed 476 DIP; only real pages own a separate height.
             return metrics;
         }
     }
     /// <summary>A real non-music page owns its height independently of media connection changes.</summary>
     public void SetDetailsPageHeight(float? height, double now)
+        =>SetDetailsPageSize(detailsPageWidth,height,now);
+    public void SetDetailsPageSize(float? width,float? height,double now)
     {
+        if (width.HasValue && (!float.IsFinite(width.Value) || width.Value < 64 || width.Value > 960))
+            throw new ArgumentOutOfRangeException(nameof(width));
         if (height.HasValue && (!float.IsFinite(height.Value) || height.Value < 160 || height.Value > 512))
             throw new ArgumentOutOfRangeException(nameof(height));
-        if (detailsPageHeight == height) return;
+        if (detailsPageWidth == width && detailsPageHeight == height) return;
+        detailsPageWidth = width;
         detailsPageHeight = height;
         if (Form != WidgetForm.Details) return;
         ClampAnchor(); Motion.Retarget(TargetPose(), now, 160, preferences.ReducedMotion);
@@ -101,6 +112,33 @@ public sealed class WidgetController
         float x=(float)Math.Clamp(anchor.CenterX-width*Scale/2,monitor.WorkArea.X,Math.Max(monitor.WorkArea.X,monitor.WorkArea.Right-width*Scale));
         float y=(float)Math.Clamp(anchor.TopY,monitor.WorkArea.Y,Math.Max(monitor.WorkArea.Y,monitor.WorkArea.Bottom-height*Scale));
         return new(x,y,width,height,Math.Min(Layout.Radius,height/2));
+    }
+    private WidgetPose ConstrainPresentationPose(WidgetPose pose)
+    {
+        // The spring keeps its raw velocity, while the submitted frame stays
+        // inside the monitor and the capture backend's per-side pixel budget.
+        // This matters when an underdamped expansion briefly crosses its target.
+        float scale=Scale;
+        var area=monitor.WorkArea;
+        float maxWidth=area.Width/scale,maxHeight=area.Height/scale;
+        if(physicalBodyLimitPixels is float limit)
+        {
+            float limitDip=MathF.BitDecrement(limit/scale);
+            maxWidth=Math.Min(maxWidth,limitDip);
+            maxHeight=Math.Min(maxHeight,limitDip);
+        }
+        float width=Math.Clamp(pose.Width,1,Math.Max(1,maxWidth));
+        float height=Math.Clamp(pose.Height,1,Math.Max(1,maxHeight));
+        double maxX=Math.Max((double)area.X,area.Right-(double)width*scale);
+        double maxY=Math.Max((double)area.Y,area.Bottom-(double)height*scale);
+        return pose with
+        {
+            X=(float)Math.Clamp((double)pose.X,area.X,maxX),
+            Y=(float)Math.Clamp((double)pose.Y,area.Y,maxY),
+            Width=width,
+            Height=height,
+            Radius=Math.Min(pose.Radius,height/2)
+        };
     }
     private void ClampAnchor()
     {

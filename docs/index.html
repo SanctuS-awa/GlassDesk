@@ -1,85 +1,731 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="GlassDesk 0.1：Windows 11 桌面上的时间、音乐与一点陪伴。预览小展开，下载 Windows 安装包。">
-  <title>GlassDesk · 桌面上的一点陪伴</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="images/favicon.png">
-  <style>
-    :root{color-scheme:light;--ink:#202329;--muted:#69707d;--brand:#5968ee;--line:#e9ebf1;--ease:cubic-bezier(.22,1,.36,1)}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#fff;color:var(--ink);font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",sans-serif;-webkit-font-smoothing:antialiased}
-    button,a{-webkit-tap-highlight-color:transparent}a{color:inherit;text-decoration:none}button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #9da8ff;outline-offset:5px}button:disabled{cursor:default}svg{display:block}button{touch-action:manipulation}
-    .wrap{width:min(1120px,calc(100% - 64px));margin:auto}.site-header{height:104px;display:flex;align-items:center;justify-content:space-between;gap:24px}.brand{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:650;letter-spacing:-.5px}.brand img{width:42px;height:42px;object-fit:contain}.header-links{display:flex;align-items:center;gap:28px;font-size:14px;color:var(--muted)}.header-links a:hover{color:var(--brand)}.version{font-size:12px;padding:5px 9px;border:1px solid var(--line);border-radius:8px;font-weight:500;color:var(--muted);letter-spacing:0}
-    .hero{min-height:580px;display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:32px;padding:40px 0 70px}.eyebrow{font-size:13px;color:var(--brand);font-weight:600;letter-spacing:.02em;margin:0 0 22px}h1{font-size:clamp(42px,4.6vw,64px);line-height:1.18;letter-spacing:-1.8px;font-weight:650;margin:0 0 25px}h1 span{display:block}.intro{max-width:390px;font-size:17px;line-height:1.9;color:var(--muted);margin:0 0 30px}.actions{display:flex;gap:12px;flex-wrap:wrap}.cta{display:inline-flex;justify-content:center;align-items:center;gap:9px;padding:13px 21px;border-radius:12px;font-size:14px;font-weight:600;transition:transform 160ms var(--ease),background 160ms var(--ease);border:1px solid var(--line)}.cta.primary{background:var(--brand);color:#fff;border-color:var(--brand)}.cta.primary:hover{background:#4c5bd7}.cta.secondary:hover{background:#f6f7fa}.cta:active{transform:scale(.98)}.requirements{font-size:12px;color:#79808d;margin:15px 0 0}
-    .showcase{min-width:0}.demo-frame{width:100%;height:336px;display:grid;place-items:center;background:#fff;position:relative}.demo-caption{text-align:center;color:#79808d;font-size:12px;line-height:1.7;margin:0}.demo-caption strong{font-weight:500;color:#545b67}.peek{width:320px;height:176px;border-radius:24px;position:relative;transform:scale(1.25);background:linear-gradient(155deg,#ffffff 0%,#f9fafc 100%);border:1px solid #e7e9ef;box-shadow:0 20px 48px -16px #24325326,0 2px 6px #24325308;isolation:isolate}
-    .peek-head{position:absolute;top:11px;left:75px;height:28px;display:flex;align-items:center;gap:17px}.companion{border:0;padding:0;width:58px;height:28px;border-radius:14px;background:#202329;display:flex;align-items:center;justify-content:center;gap:5px;position:relative;transform-origin:center}.companion:hover{background:#292d34}.eyes{display:flex;gap:5px;transform:translate(var(--gaze-x,0px),var(--gaze-y,0px));transition:transform 180ms var(--ease)}.eye{width:5px;height:9px;border-radius:3px;background:#fff;transform-origin:center;animation:blink 5.4s infinite}.companion.happy .eye{height:6px;width:7px;background:transparent;border:2px solid #fff;border-bottom:0;border-radius:9px 9px 0 0;animation:none}.clock{min-width:68px;font-size:17px;line-height:26px;font-variant-numeric:tabular-nums;letter-spacing:-.35px}
-    .metadata{position:absolute;left:24px;top:60px;right:24px;display:flex;align-items:center;gap:14px}.cover{width:48px;height:48px;flex:none;border-radius:11px;overflow:hidden;background:#f0f2ff;display:grid;place-items:center}.cover img{width:44px;height:44px;mix-blend-mode:multiply}.track{flex:1;min-width:0}.song{margin:0 0 5px;font-size:17px;line-height:23px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.25px}.artist{margin:0;font-size:12px;color:#707785;line-height:17px}.spectrum{display:flex;align-items:center;gap:2px;width:30px;height:18px;margin-left:1px;flex:none}.spectrum i{display:block;width:2px;height:3px;border-radius:2px;background:#7c8597;transform-origin:center}
-    .transport{position:absolute;top:124px;left:86px;display:flex;gap:8px}.control{padding:0;display:grid;place-items:center;width:44px;height:44px;border:1px solid #e3e6ed;border-radius:50%;background:linear-gradient(#fff,#f4f5f8);box-shadow:0 1px 2px #1921320c;transition:background 140ms,transform 140ms var(--ease)}.control:hover{background:#eef0f7}.control:active{transform:scale(.94)}.control svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.control .pause{display:none}.control[aria-pressed=true] .play{display:none}.control[aria-pressed=true] .pause{display:block}.play-toggle{background:#fff}.play-toggle[aria-pressed=true]{background:#f0f2ff;color:#4f5ed9}
-    .benefits{display:grid;grid-template-columns:repeat(3,1fr);gap:56px;padding:38px 0 64px;border-top:1px solid #eff0f4}.benefit h2{font-size:17px;letter-spacing:-.3px;margin:0 0 12px;font-weight:600}.benefit p{font-size:14px;color:var(--muted);line-height:1.9;margin:0}.benefit svg{width:22px;height:22px;margin:0 0 20px;color:#777f96;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.download-band{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:32px 0;border-top:1px solid #eff0f4}.download-band h2{font-size:22px;letter-spacing:-.5px;margin:0 0 7px;font-weight:600}.download-band p{font-size:13px;color:var(--muted);margin:0;line-height:1.8}.footer{border-top:1px solid #eff0f4;padding:23px 0 28px;display:flex;gap:20px;justify-content:space-between;color:#7b8290;font-size:12px;line-height:1.8}.footer a:hover{color:var(--brand)}.demo-note{max-width:460px;font-size:11px;line-height:1.7;color:#9297a1;margin:18px auto 0;text-align:center}
-    @keyframes blink{0%,37%,41%,100%{transform:scaleY(1)}39%{transform:scaleY(.12)}}@keyframes breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}
-    html.capture .demo-frame{width:560px;height:320px;margin:0}html.capture body{width:560px;height:320px;overflow:hidden}html.capture .site-header,html.capture .story,html.capture .demo-caption,html.capture .demo-note,html.capture .benefits,html.capture .download-band,html.capture .footer{display:none}html.capture .wrap{width:560px;margin:0}html.capture .hero{display:block;padding:0;min-height:0}html.capture .peek{transform:scale(1.25)}html.capture *,html.capture *::before,html.capture *::after{animation:none!important;transition:none!important}
-    @media(max-width:800px){.wrap{width:calc(100% - 40px)}.site-header{height:82px}.header-links{gap:16px}.hero{grid-template-columns:1fr;gap:4px;padding:42px 0 46px;min-height:0}.story{text-align:center}.intro{margin:0 auto 26px;max-width:440px}.actions{justify-content:center}h1{font-size:48px;letter-spacing:-1.2px}.eyebrow{margin-bottom:16px}.demo-frame{height:310px}.benefits{gap:26px;padding-top:30px}.download-band{align-items:flex-start}.footer{padding-bottom:24px}.demo-note{margin-top:10px}}
-    @media(max-width:480px){.brand{font-size:18px;gap:6px}.brand img{width:36px;height:36px}.header-links .repo-label{display:none}.version{padding:4px 6px;font-size:11px}.header-links{font-size:12px}h1{font-size:42px;letter-spacing:-.8px}.intro{font-size:15px}.hero{padding-top:32px}.cta{padding:12px 15px}.peek{transform:scale(1)}.demo-frame{height:250px}.benefits{grid-template-columns:1fr;gap:28px}.benefit svg{margin-bottom:12px}.benefit h2{margin-bottom:8px}.download-band{display:block}.download-band .cta{margin-top:20px}.footer{display:block}.footer div+div{margin-top:9px}.demo-caption{font-size:11px}}
-    @media(max-width:359px){.peek{transform:scale(.86)}.header-links{gap:10px}.brand{font-size:16px}.version{display:none}}
-    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="GlassDesk 液态玻璃的可交互网页展示。">
+<title>GlassDesk · 液态玻璃展示</title>
+<style>
+:root{color-scheme:dark;--ink:#f7f8ff;--muted:#a8adbf;--line:#ffffff26;--accent:#c9d8ff}
+*{box-sizing:border-box}
+html{background:#0b0d16}
+body{margin:0;background:radial-gradient(ellipse at 50% -20%,#2a3452 0,transparent 58%),linear-gradient(145deg,#0b0d16,#121829 62%,#151020);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;line-height:1.55}
+button,a{font:inherit}
+a{color:inherit}
+.page{width:min(1120px,calc(100% - 40px));margin:auto}
+header{display:flex;align-items:center;justify-content:space-between;padding:22px 0;color:#dfe5ff}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:.02em}
+.brand img{width:32px;height:32px;object-fit:contain}
+header nav{display:flex;gap:20px;color:var(--muted);font-size:14px}
+.glass-intro{position:relative;overflow:hidden;border:1px solid #ffffff36;border-radius:30px;padding:clamp(24px,5vw,54px);background:linear-gradient(125deg,#ffffff18,#dfeaff08 58%,#a9a8ff10);backdrop-filter:blur(24px) saturate(1.35);box-shadow:0 24px 80px #0008,inset 0 1px #ffffff60}
+.glass-intro:after{content:"";position:absolute;inset:1px;border-radius:29px;pointer-events:none;background:linear-gradient(135deg,#ffffff25,transparent 32%,transparent 70%,#d2dcff16);mask:linear-gradient(#000,transparent 55%)}
+.hero-content{position:relative;z-index:1;max-width:770px}
+.eyebrow{font-size:13px;color:#c5d2ff;letter-spacing:.12em;text-transform:uppercase}
+h1{font-size:clamp(42px,8vw,76px);line-height:1.05;letter-spacing:-.055em;margin:12px 0}
+.slogan{font-size:clamp(19px,3vw,26px);margin:0 0 6px;color:#f5f5ff}
+.version{color:var(--muted);margin:0 0 25px}
+.link-row{display:flex;flex-wrap:wrap;gap:10px}
+.link-row a,.mode-button{border:1px solid #ffffff3b;background:#ffffff12;color:#f7f8ff;border-radius:999px;padding:9px 16px;text-decoration:none;transition:background .2s,border-color .2s}
+.link-row a:first-child{background:#e8edff;color:#151b2b;border-color:#fff}
+.link-row a:hover,.mode-button:hover,.mode-button[aria-pressed=true]{background:#ffffff2b;border-color:#ffffff82}
+.intro-note{margin-top:17px;color:#d2d7e8;font-size:13px}
+.section-heading{display:flex;align-items:end;justify-content:space-between;gap:18px;margin:42px 0 14px}
+.section-heading h2{font-size:22px;margin:0}
+.section-heading p{margin:0;color:var(--muted);font-size:14px}
+.mode-buttons{display:flex;flex-wrap:wrap;gap:8px}
+.mode-button{cursor:pointer;padding:7px 14px;font-size:14px}
+.demo-frame{position:relative;width:100%;aspect-ratio:16/10;overflow:hidden;border:1px solid #ffffff26;border-radius:28px;background:#191c2d;isolation:isolate;box-shadow:0 28px 80px #0007}
+#sceneCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#uiLayer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.glass-fallback{display:none;position:absolute;pointer-events:none;border:1px solid #ffffff70;background:linear-gradient(145deg,#ffffff36,#e6eaff18);backdrop-filter:blur(18px) saturate(1.4);box-shadow:inset 0 1px #ffffff9c,0 12px 34px #080d2780}
+.form-view{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;color:#fff;text-shadow:0 1px 8px #12121e66}
+#capsuleView,#peekView,#homeView{opacity:0}
+.sphere{position:absolute;border-radius:50%;background:radial-gradient(circle at 32% 25%,#f3e9ff 0,#a9b9ff 22%,#7084df 51%,#41539c 78%,#252e60 100%);box-shadow:inset -5px -7px 12px #19224d80,inset 2px 2px 5px #fff9,0 5px 14px #080d2766}
+.sphere .eye{position:absolute;width:6px;height:11px;border-radius:8px;background:#263054;top:15px;overflow:hidden}
+.sphere .eye.one{left:13px}.sphere .eye.two{right:13px}
+.sphere .pupil{position:absolute;inset:2px 1px;background:#fff;border-radius:50%;transform:translate(0,0);transform-origin:center}
+.clock{position:absolute;font-variant-numeric:tabular-nums;font-weight:650;letter-spacing:.01em;color:white;text-shadow:0 2px 9px #0008}
+#capsuleView .sphere{left:6px;top:4px;width:40px;height:40px}
+#capsuleView .clock{right:17px;top:7px;font-size:26px}
+#peekView .sphere{left:14px;top:9px;width:42px;height:42px}
+#peekView .sphere .eye{top:16px}
+#peekView .clock{left:68px;top:12px;font-size:22px}
+.peek-song{position:absolute;left:78px;top:57px;width:110px}
+.peek-song strong,.peek-song span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.peek-song strong{font-size:14px}.peek-song span{font-size:11px;color:#e4e8f6}
+.album{position:absolute;overflow:hidden;border-radius:11px;background:linear-gradient(140deg,#ffca83 0,#e76a79 40%,#7a5dc9 72%,#27386f);box-shadow:inset 0 1px #ffffff9c,0 6px 16px #10162a77}
+.album:before{content:"";position:absolute;width:70%;height:70%;left:15%;top:16%;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff9,#f4bcfc45 36%,#142452aa 72%);filter:blur(1px)}
+.album:after{content:"";position:absolute;left:12%;right:12%;bottom:14%;height:2px;background:#fff9;box-shadow:0 -5px #fff6,0 -10px #fff4}
+.peek-album{left:14px;top:61px;width:52px;height:48px}
+.controls{position:absolute;display:flex;align-items:center;gap:5px}
+.peek-controls{left:195px;top:75px}
+.control{display:grid;place-items:center;border:1px solid #ffffff70;border-radius:50%;background:#ffffff18;color:white;text-shadow:0 1px 5px #1118;box-shadow:inset 0 1px #ffffff70,0 3px 9px #12182b55;cursor:pointer;pointer-events:auto;padding:0}
+.peek-controls .control{width:31px;height:31px;font-size:12px}
+.control.play{width:36px;height:36px;font-size:14px;background:#ffffff32}
+.control:active,.control.pressed{transform:scale(.94);background:#ffffff48}
+#homeView{width:960px;height:512px}
+.status-time{position:absolute;left:25px;top:10px;font-size:15px;font-weight:700}
+.island{position:absolute;left:438px;top:10px;width:84px;height:30px;border-radius:18px;background:#10121bcf;border:1px solid #ffffff28;box-shadow:0 3px 12px #0005}
+.status-right{position:absolute;right:27px;top:14px;display:flex;align-items:center;gap:10px;font-size:12px}
+.wifi{font-size:16px;line-height:1}
+.battery{width:25px;height:12px;border:1.5px solid #fff;border-radius:3px;position:relative}
+.battery:before{content:"";position:absolute;left:2px;top:2px;width:15px;height:6px;border-radius:1px;background:#fff}
+.battery:after{content:"";position:absolute;right:-4px;top:3px;width:2px;height:4px;background:#fff;border-radius:0 2px 2px 0}
+.home-card{position:absolute;color:#fff}
+.weather{left:28px;top:130px;width:176px;height:224px;padding:15px}
+.weather .place{font-size:12px;white-space:nowrap}
+.weather .weather-icon{font-size:29px;margin-top:14px}
+.weather .temperature{font-size:38px;font-weight:650;line-height:1.08}
+.weather .weather-caption{font-size:12px;margin-top:6px}
+.weather .weather-foot{position:absolute;left:15px;right:15px;bottom:13px;border-top:1px solid #ffffff45;padding-top:8px;font-size:11px;color:#f3f3ff}
+.calendar{left:220px;top:116px;width:256px;height:292px;padding:13px 15px}
+.calendar-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.calendar-head strong{font-size:16px}.calendar-head span{font-size:10px;color:#f2f4ff}
+.weekdays,.days{display:grid;grid-template-columns:repeat(7,1fr);text-align:center}
+.weekdays{font-size:10px;color:#e1e7fa;margin-bottom:5px}
+.days{grid-auto-rows:31px;font-size:11px}
+.day{padding-top:4px;position:relative;color:#f2f4ff}
+.day.today{color:#fff;font-weight:700}
+.day.today:before{content:"";position:absolute;z-index:-1;left:50%;top:1px;transform:translateX(-50%);width:25px;height:25px;border-radius:50%;background:#708cff}
+.day.muted{color:#aeb5ca}
+.music{left:528px;top:104px;width:280px;height:316px;padding:18px}
+.music-label{font-size:12px;color:#f0f2ff}
+.home-album{left:604px;top:140px;width:128px;height:128px;border-radius:22px}
+.music-title{position:absolute;left:544px;top:278px;width:248px;font-weight:650;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.music-artist{position:absolute;left:544px;top:304px;font-size:12px;color:#e5e9f7}
+.music-progress{position:absolute;left:552px;top:337px;width:232px;height:3px;border-radius:3px;background:#ffffff67}
+.music-progress:before{content:"";display:block;width:42%;height:100%;background:white;border-radius:3px}
+.home-controls{position:absolute;left:624px;top:354px;display:flex;align-items:center;gap:16px}
+.home-controls .control{width:34px;height:34px;font-size:13px}
+.home-controls .control.play{width:42px;height:42px}
+.volume-track{position:absolute;left:944px;top:172px;width:6px;height:168px;border-radius:8px;background:#ffffff47;border:1px solid #ffffffb0;box-shadow:0 3px 14px #0004}
+.volume-track:after{content:"";position:absolute;left:-2px;top:49px;width:8px;height:70px;border-radius:8px;background:linear-gradient(#fff,#d6ddf1);box-shadow:0 1px 7px #0004}
+.dock{position:absolute;left:354px;top:444px;width:252px;height:44px;border-radius:24px;display:flex;align-items:center;justify-content:space-evenly}
+.dock-app{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(140deg,#ffe071,#f29528);color:#fff;font-size:19px;text-shadow:0 1px 4px #6e3d21}
+.dock-app:nth-child(2){background:linear-gradient(140deg,#ff8fb7,#9d66dd)}
+.dock-app:nth-child(3){background:linear-gradient(140deg,#62e4e2,#3679e9)}
+.dock-nav{position:absolute;left:620px;top:444px;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:20px}
+#webglWarning{position:absolute;z-index:10;left:12px;right:12px;bottom:10px;padding:7px 11px;background:#171a29d9;border:1px solid #ffffff3b;border-radius:10px;color:#fff;font-size:12px;display:none}
+.fallback #webglWarning{display:block}
+.fallback #sceneCanvas{opacity:.06}
+.fallback .demo-frame{background:radial-gradient(circle at 17% 30%,#ffbf6c 0 8%,transparent 18%),radial-gradient(circle at 83% 23%,#77e2dd 0 10%,transparent 21%),linear-gradient(132deg,#344f9b,#925eaa 47%,#ed8a75 68%,#245a78)}
+.fallback .glass-fallback{display:block}
+.fallback #capsuleView,.fallback #peekView,.fallback #homeView{filter:drop-shadow(0 8px 14px #0008)}
+.fallback #homeView .home-card,.fallback .peek-album,.fallback .control,.fallback .dock,.fallback .dock-nav{background-color:#dfe6fa25;backdrop-filter:blur(18px) saturate(1.4);border:1px solid #ffffff6b}
+footer{color:var(--muted);font-size:13px;padding:24px 0 46px}
+body.capture{margin:0;background:#111}
+body.capture .page{display:block;width:100%;margin:0}
+body.capture header,body.capture .section-heading,body.capture footer,body.capture .glass-intro{display:none}
+body.capture #showcase{display:block}
+body.capture #demoFrame{width:100vw;height:100vh;aspect-ratio:auto;border:0;border-radius:0;box-shadow:none}
+body.capture #webglWarning{display:none}
+@media(max-width:720px){.page{width:min(100% - 24px,1120px)}header nav{gap:12px;font-size:12px}.section-heading{align-items:flex-start;flex-direction:column}.demo-frame{border-radius:18px}.glass-intro{border-radius:22px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <header class="site-header">
-      <a class="brand" href="./" aria-label="GlassDesk 首页"><img src="images/logo.png" alt=""><span>GlassDesk</span><span class="version">0.1</span></a>
-      <nav class="header-links" aria-label="主导航"><a class="repo-label" href="https://github.com/Sheng-awa/GlassDesk" target="_blank" rel="noopener">GitHub ↗</a><a href="https://github.com/Sheng-awa/GlassDesk/releases/tag/v0.1.0">下载 Windows 版</a></nav>
-    </header>
-    <main>
-      <section class="hero" aria-labelledby="hero-title">
-        <div class="story">
-          <p class="eyebrow">给 WINDOWS 桌面，一点温度</p>
-          <h1 id="hero-title"><span>时间，音乐。</span><span>还有一点陪伴。</span></h1>
-          <p class="intro">常看的时间，随手可控的音乐，和一双会回应你的眼睛。需要时轻轻展开，陪你待在桌面上。</p>
-          <div class="actions"><a class="cta primary" href="https://github.com/Sheng-awa/GlassDesk/releases/download/v0.1.0/GlassDesk-0.1.0-win-x64-setup.exe"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v5h14v-5"/></svg>下载 0.1 安装包</a><a class="cta secondary" href="https://github.com/Sheng-awa/GlassDesk" target="_blank" rel="noopener">看看源码 ↗</a></div>
-          <p class="requirements">Windows 11 · x64 · 自带运行依赖</p>
-        </div>
-        <div class="showcase">
-          <div class="demo-frame" id="demo-frame">
-            <div class="peek" role="group" aria-label="GlassDesk 音乐小展开交互演示">
-              <div class="peek-head"><button class="companion" type="button" aria-label="和陪伴球打个招呼"><span class="eyes" aria-hidden="true"><span class="eye"></span><span class="eye"></span></span></button><time class="clock" datetime="09:41">09:41</time></div>
-              <div class="metadata"><div class="cover"><img src="images/logo.png" alt="GlassDesk 演示封面"></div><div class="track"><p class="song" id="song">Morning Light</p><p class="artist">GlassDesk Demo</p></div><div class="spectrum" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
-              <div class="transport">
-                <button class="control" type="button" id="previous" aria-label="上一首演示曲目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16M19 5 7 12l12 7Z"/></svg></button>
-                <button class="control play-toggle" type="button" id="play" aria-label="播放演示" aria-pressed="false"><svg class="play" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 4 13 8-13 8Z"/></svg><svg class="pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3v14H7zm7 0h3v14h-3z"/></svg></button>
-                <button class="control" type="button" id="next" aria-label="下一首演示曲目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 4v16M5 5l12 7-12 7Z"/></svg></button>
-              </div>
-            </div>
-          </div>
-          <p class="demo-caption"><strong>小展开 · 交互演示</strong><br>试着移动鼠标，或和它打个招呼。</p>
-          <p class="demo-note">网页曲目与按钮用于交互演示，不会播放声音或控制你的播放器。应用中的歌曲、封面来自实际音乐来源。</p>
-        </div>
-      </section>
-      <section class="benefits" aria-label="三个小心意">
-        <article class="benefit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-8-4.5-8-10a4.5 4.5 0 0 1 8-2.7A4.5 4.5 0 0 1 20 10c0 5.5-8 10-8 10Z"/></svg><h2>陪伴，有一点回应</h2><p>轻轻眨眼，望向鼠标。用表情和小动作，回应桌面上的日常。</p></article>
-        <article class="benefit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/></svg><h2>听歌，顺手一点</h2><p>展开看封面、切歌或暂停。暂停一会儿，收起的胶囊就把位置还给时间。</p></article>
-        <article class="benefit"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><h2>时间，抬眼就看见</h2><p>常驻的数字时间，安静地待在身边。选一种喜欢的字体，让它更像你的桌面。</p></article>
-      </section>
-      <section class="download-band" aria-labelledby="download-title"><div><h2 id="download-title">让桌面，多一点陪伴。</h2><p>GlassDesk 0.1 · Windows 11 22H2 或更新版本 · x64</p></div><a class="cta secondary" href="https://github.com/Sheng-awa/GlassDesk/releases/tag/v0.1.0">查看版本与安装说明 ↗</a></section>
-    </main>
-    <footer class="footer"><div>GlassDesk · 桌面上的一点陪伴</div><div><a href="https://github.com/Sheng-awa/GlassDesk/issues">反馈与建议</a> · <a href="https://github.com/Sheng-awa/GlassDesk/blob/main/LICENSE">MIT 许可</a></div></footer>
-  </div>
-  <script>
-    (()=>{'use strict';const face=document.querySelector('.companion'),eyes=document.querySelector('.eyes'),eyeParts=[...document.querySelectorAll('.eye')],frame=document.querySelector('.demo-frame'),play=document.querySelector('#play'),bars=[...document.querySelectorAll('.spectrum i')],reduced=matchMedia('(prefers-reduced-motion: reduce)'),titles=['Morning Light','Quiet Afternoon','Night Walk'];let playing=false,index=0,animation=0,greeting=0,focused=false;
-      if(new URLSearchParams(location.search).has('capture'))document.documentElement.classList.add('capture');
-      function spectrum(t){bars.forEach((bar,i)=>{bar.style.height=(playing?3+Math.pow(Math.sin(t*2.4+i*.81),2)*13:3)+'px'})}
-      function tick(t){if(!playing||reduced.matches||document.hidden){animation=0;return}spectrum(t/1000);animation=requestAnimationFrame(tick)}
-      function present(){play.setAttribute('aria-pressed',String(playing));play.setAttribute('aria-label',playing?'暂停演示':'播放演示');document.querySelector('#song').textContent=titles[index];cancelAnimationFrame(animation);animation=0;spectrum(0);if(playing&&!reduced.matches&&!document.hidden)animation=requestAnimationFrame(tick)}
-      function greet(){clearTimeout(greeting);face.classList.add('happy');greeting=setTimeout(()=>face.classList.remove('happy'),1200)}
-      frame.addEventListener('pointermove',e=>{if(reduced.matches||focused)return;const box=face.getBoundingClientRect();eyes.style.setProperty('--gaze-x',Math.max(-2.4,Math.min(2.4,(e.clientX-box.left-box.width/2)/65))+'px');eyes.style.setProperty('--gaze-y',Math.max(-1.7,Math.min(1.7,(e.clientY-box.top-box.height/2)/85))+'px')});
-      frame.addEventListener('pointerleave',()=>{eyes.style.setProperty('--gaze-x','0px');eyes.style.setProperty('--gaze-y','0px')});
-      face.addEventListener('click',greet);face.addEventListener('focus',()=>{focused=true});face.addEventListener('blur',()=>{focused=false});play.addEventListener('click',()=>{playing=!playing;present();greet()});document.querySelector('#next').addEventListener('click',()=>{index=(index+1)%titles.length;present()});document.querySelector('#previous').addEventListener('click',()=>{index=(index+titles.length-1)%titles.length;present()});document.addEventListener('visibilitychange',present);reduced.addEventListener('change',()=>{eyes.style.setProperty('--gaze-x','0px');eyes.style.setProperty('--gaze-y','0px');present()});
-      // Deterministic, silent frame export for the README animation. No player API.
-      window.GlassDeskShowcase={renderAt(t){cancelAnimationFrame(animation);face.classList.remove('happy');face.style.transform='translateY('+(-.7+.7*Math.cos(t*Math.PI/2))+'px)';eyes.style.transform='translate('+(2*Math.sin(t*Math.PI/2))+'px,'+(.5*Math.sin(t*Math.PI))+'px)';const blink=Math.max(.14,1-Math.max(0,1-Math.abs(t-2.1)/.15)*.86);eyeParts.forEach(eye=>eye.style.transform='scaleY('+blink+')');bars.forEach((bar,i)=>bar.style.height=(3+Math.pow(Math.sin(t*2+i*.8),2)*9)+'px')}};present();
-    })();
-  </script>
+<div id="pageChrome" class="page">
+<header><div class="brand"><img src="images/logo.png" alt=""><span>GlassDesk</span></div><nav><a href="#showcase">液态玻璃</a><a href="https://github.com/SanctuS-awa/GlassDesk">GitHub</a></nav></header>
+<main>
+<section class="glass-intro">
+<div class="hero-content">
+<div class="eyebrow">Windows 11 桌面小组件</div>
+<h1>GlassDesk</h1>
+<p class="slogan">时间，音乐。还有一点陪伴。</p>
+<p class="version">0.2.1.3 beta · 液态玻璃插件 0.3</p>
+<div class="link-row"><a href="https://github.com/SanctuS-awa/GlassDesk/releases">下载 GlassDesk</a><a href="https://github.com/SanctuS-awa/GlassDesk">GitHub 项目</a><a href="https://github.com/SanctuS-awa/GlassDesk/issues">反馈问题</a></div>
+<p class="intro-note">把熟悉的信息放在桌面一角，让玻璃顺着背景轻轻弯曲。</p>
+</div>
+</section>
+<section id="showcase">
+<div class="section-heading"><div><h2>看看液态玻璃如何折射</h2><p>拖动组件，或切换形态观察折射带的变化。</p></div><div class="mode-buttons" aria-label="组件形态">
+<button class="mode-button" data-mode="capsule" aria-pressed="true">胶囊</button><button class="mode-button" data-mode="peek" aria-pressed="false">小展开</button><button class="mode-button" data-mode="home" aria-pressed="false">大展开</button>
+</div></div>
+<div id="demoFrame" class="demo-frame">
+<canvas id="sceneCanvas" aria-label="程序绘制的彩色桌面壁纸与液态玻璃组件"></canvas>
+<div id="uiLayer">
+<div id="glassFallback" class="glass-fallback"></div>
+<div id="capsuleView" class="form-view">
+<div class="sphere"><i class="eye one"><b class="pupil"></b></i><i class="eye two"><b class="pupil"></b></i></div><div class="clock">09:41</div>
+</div>
+<div id="peekView" class="form-view">
+<div class="sphere"><i class="eye one"><b class="pupil"></b></i><i class="eye two"><b class="pupil"></b></i></div><div class="clock">09:41</div>
+<div class="album peek-album"></div><div class="peek-song"><strong>沿着晚风散步</strong><span>白昼邮差 · 演示曲目</span></div>
+<div class="controls peek-controls"><button class="control" aria-label="上一首">◀</button><button id="peekPlay" class="control play" aria-label="播放">▶</button><button class="control" aria-label="下一首">▶</button></div>
+</div>
+<div id="homeView" class="form-view">
+<div class="status-time">09:41</div><div class="island"></div><div class="status-right"><span class="wifi">⌁</span><span>演示</span><i class="battery"></i></div>
+<div class="home-card weather"><div class="place">南昌 · 多云</div><div class="weather-icon">☁</div><div class="temperature">17°</div><div class="weather-caption">体感 16°　最高 18°</div><div class="weather-foot">天气为演示数据</div></div>
+<div class="home-card calendar"><div class="calendar-head"><strong>2026年11月</strong><span>周日 · 初八</span></div><div class="weekdays"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div id="calendarDays" class="days"></div></div>
+<div class="home-card music"><div class="music-label">正在播放 · 演示</div></div><div class="album home-album"></div>
+<div class="music-title">沿着晚风散步</div><div class="music-artist">白昼邮差 · 虚构曲目</div><div class="music-progress"></div>
+<div class="home-controls"><button class="control" aria-label="上一首">◀</button><button id="homePlay" class="control play" aria-label="播放">▶</button><button class="control" aria-label="下一首">▶</button></div>
+<div class="volume-track" aria-label="音量演示条"></div>
+<div class="dock"><span class="dock-app">▰</span><span class="dock-app">♫</span><span class="dock-app">◉</span></div><div class="dock-nav">☰</div>
+</div>
+</div>
+<div id="webglWarning">当前浏览器没有可用的 WebGL2，正在使用 CSS 磨砂效果。</div>
+</div>
+</section>
+</main>
+<footer>此网页使用自绘背景与虚构的天气、日期和曲目数据，不连接本机、不控制播放器，也不播放声音。</footer>
+</div>
+<script>
+(function(){
+"use strict";
+const query=new URLSearchParams(location.search);
+const captureScene=query.get("capture");
+if(captureScene){document.body.classList.add("capture");document.body.dataset.scene=captureScene;}
+const frame=document.getElementById("demoFrame");
+const canvas=document.getElementById("sceneCanvas");
+const ui=document.getElementById("uiLayer");
+const warn=document.getElementById("webglWarning");
+const glassFallback=document.getElementById("glassFallback");
+const reduced=window.matchMedia("(prefers-reduced-motion: reduce)");
+const gl=canvas.getContext("webgl2",{alpha:false,antialias:true,premultipliedAlpha:false,preserveDrawingBuffer:true});
+let webgl=false,programs={},targets={},bgCanvas=document.createElement("canvas"),bgCtx=bgCanvas.getContext("2d"),bgTex=null;
+let buffer=null,frameW=0,frameH=0,dpr=1,lastT=0,liveStarted=performance.now()/1000;
+const views={capsule:document.getElementById("capsuleView"),peek:document.getElementById("peekView"),home:document.getElementById("homeView")};
+const sizes={capsule:[200,48,24],peek:[320,120,26],home:[960,512,44]};
+let live={from:"capsule",to:"capsule",start:0,duration:.65};
+let liveOffset={x:0,y:0},dragging=null,mouse={x:.5,y:.5},manualPlay=false,wasDragged=false;
+
+function shaderSource(fn){const s=fn.toString();return s.slice(s.indexOf("/*")+2,s.lastIndexOf("*/")).trim();}
+function vertexShader(){/*
+#version 300 es
+precision highp float;
+void main(){
+ vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));
+ gl_Position=vec4(p*2.0-1.0,0.0,1.0);
+}
+*/}
+function copyFragment(){/*
+#version 300 es
+precision highp float;
+uniform sampler2D uTexture;
+uniform vec2 uSize;
+out vec4 outColor;
+void main(){outColor=texture(uTexture,gl_FragCoord.xy/uSize);}
+*/}
+function blurFragment(){/*
+#version 300 es
+precision highp float;
+uniform sampler2D uInput;
+uniform vec2 uInputSize;
+uniform float uSigma;
+uniform int uAxis;
+uniform int uDownsample;
+out vec4 outColor;
+void main(){
+ vec2 outputPixel=gl_FragCoord.xy;
+ vec2 basePixel=uDownsample==1?outputPixel*2.0:outputPixel;
+ vec2 axis=uAxis==0?vec2(1.0,0.0):vec2(0.0,1.0);
+ float sigma=max(uSigma,0.001);
+ int radius=int(ceil(3.0*sigma));
+ vec2 lo=0.5/uInputSize,hi=(uInputSize-0.5)/uInputSize;
+ vec2 uv=clamp(basePixel/uInputSize,lo,hi);
+ vec4 sum=texture(uInput,uv);float total=1.0;
+ for(int i=1;i<=radius;i+=2){
+  float w0=exp(-float(i*i)/(2.0*sigma*sigma));
+  int next=i+1;
+  float w1=next<=radius?exp(-float(next*next)/(2.0*sigma*sigma)):0.0;
+  float weight=w0+w1;
+  float offset=float(i)+(weight>0.0?w1/weight:0.0);
+  vec2 delta=axis*(offset/uInputSize);
+  sum+=texture(uInput,clamp(uv+delta,lo,hi))*weight;
+  sum+=texture(uInput,clamp(uv-delta,lo,hi))*weight;
+  total+=2.0*weight;
+ }
+ outColor=sum/total;
+}
+*/}
+function panelFragment(){/*
+#version 300 es
+precision highp float;
+uniform sampler2D uSharp;
+uniform sampler2D uSoft;
+uniform vec4 uRect;
+uniform vec4 uShape;
+uniform vec4 uOptics;
+uniform vec4 uTone;
+uniform vec4 uTint;
+uniform vec4 uLight;
+uniform vec2 uViewport;
+uniform vec2 uSoftSize;
+out vec4 outColor;
+float saturate(float x){return clamp(x,0.0,1.0);}
+vec2 saturate(vec2 x){return clamp(x,0.0,1.0);}
+vec3 saturate(vec3 x){return clamp(x,0.0,1.0);}
+float smoothstepSafe(float a,float b,float x){return smoothstep(a,b,x);}
+float sdRoundRect(vec2 p,vec2 halfSize,float radius){
+ radius=clamp(radius,0.0,min(halfSize.x,halfSize.y));
+ vec2 q=abs(p)-halfSize+radius;
+ return length(max(q,0.0))+min(max(q.x,q.y),0.0)-radius;
+}
+float surfaceDistance(vec2 p,vec2 halfSize,float radius){
+ float v=saturate((p.y+halfSize.y)/max(halfSize.y*2.0,1.0));
+ float strain=uShape.z;
+ float belly=4.0*v*(1.0-v);
+ float amount=abs(strain)*belly*belly*(0.78+0.22*(strain>=0.0?1.0:-1.0)*(2.0*v-1.0));
+ float limit=min(7.0*uOptics.x,min(halfSize.y*0.07,halfSize.x*0.036));
+ float factor=1.0-min(amount,1.15)*limit/max(halfSize.x,1.0);
+ p.x/=factor;
+ return sdRoundRect(p,halfSize,radius)*factor;
+}
+vec3 readSharp(vec2 pixel){
+ vec2 cap=max(uViewport,vec2(1.0));
+ vec2 lo=0.5/cap,hi=(uViewport-0.5)/cap;
+ return texture(uSharp,clamp(pixel/cap,lo,hi)).rgb;
+}
+vec3 readSoft(vec2 pixel){
+ vec2 cap=max(uSoftSize,vec2(1.0));
+ vec2 lo=0.5/cap,hi=(uSoftSize-0.5)/cap;
+ return texture(uSoft,clamp(pixel/(cap*2.0),lo,hi)).rgb;
+}
+vec3 saturateBy(vec3 c,float value){
+ float l=dot(c,vec3(0.213,0.715,0.072));
+ return l+(c-l)*value;
+}
+vec3 srgbToLinear(vec3 c){
+ vec3 low=c/12.92;
+ vec3 high=pow(max((c+0.055)/1.055,vec3(0.0)),vec3(2.4));
+ return mix(high,low,step(c,vec3(0.04045)));
+}
+void main(){
+ vec2 halfSize=uRect.zw*0.5;
+ vec2 local=gl_FragCoord.xy-uRect.xy-halfSize;
+ float radius=min(uShape.x,min(halfSize.x,halfSize.y));
+ float d=surfaceDistance(local,halfSize,radius);
+ if(d>1.0)discard;
+ float dpi=max(uOptics.x,0.01);
+ float shortSide=min(uRect.z,uRect.w);
+ float shortDip=shortSide/dpi;
+ float smallFade=smoothstep(0.0,12.0,shortDip);
+ float rimFloor=14.0;
+ float rimCeil=min(uShape.y,56.0);
+ float rimCap=clamp(shortDip*0.28,rimFloor,rimCeil);
+ float B=round(max(4.0,min(rimCap,shortDip/3.2)))*dpi*smallFade;
+ float dCapDip=clamp(shortDip*0.11,6.0,22.0);
+ float D=min(dCapDip*dpi,0.78*B)*smallFade;
+ float u=saturate(max(-d,0.0)/max(B,0.001));
+ float eps=clamp(B*0.18,0.75,4.0);
+ vec2 g=vec2(
+  surfaceDistance(local+vec2(eps,0.0),halfSize,radius)-surfaceDistance(local-vec2(eps,0.0),halfSize,radius),
+  surfaceDistance(local+vec2(0.0,eps),halfSize,radius)-surfaceDistance(local-vec2(0.0,eps),halfSize,radius))/(2.0*eps);
+ float gl=length(g);vec2 outward=g/max(gl,1e-5);
+ float x=max(u,0.0001),v=1.0-x;
+ const float lensPower=3.2,lensEdge=1.55;
+ float base=max(1.0-pow(v,lensPower),1e-6);
+ float slope=(0.80*lensEdge)*pow(v,lensPower-1.0)/pow(base,1.0-1.0/lensPower);
+ float cosI=inversesqrt(1.0+slope*slope),sinI=slope*cosI;
+ float sinT=sinI/1.50,cosT=sqrt(max(1.0-sinT*sinT,0.0));
+ float tanDelta=(sinI*cosT-cosI*sinT)/max(cosI*cosT+sinI*sinT,1e-5);
+ float bendNorm=saturate(tanDelta/sqrt(1.50*1.50-1.0));
+ float axisFade=smoothstep(0.10,0.75,gl);
+ float joinFade=1.0-smoothstep(0.88,1.0,u);
+ float amount=D*bendNorm*joinFade*axisFade*uOptics.y;
+ vec2 offset=-outward*amount;
+ float inside=max(-d,0.0);
+ float split=min(amount*uOptics.z,0.45*dpi)*smoothstep(0.5*dpi,1.8*dpi,inside)*joinFade;
+ vec3 sharp=readSharp(gl_FragCoord.xy+offset);
+ vec3 soft=readSoft(gl_FragCoord.xy+offset);
+ float crisp=0.82*(1.0-u)*(1.0-u);
+ vec3 color=mix(soft,sharp,crisp);
+ if(split>0.001){
+  vec3 r=mix(readSoft(gl_FragCoord.xy+offset+outward*split),readSharp(gl_FragCoord.xy+offset+outward*split),crisp);
+  vec3 b=mix(readSoft(gl_FragCoord.xy+offset-outward*split),readSharp(gl_FragCoord.xy+offset-outward*split),crisp);
+  color=vec3(r.r,color.g,b.b);
+ }
+ float dark=saturate(uLight.w);
+ color=saturateBy(color,clamp(uTone.x,1.0,1.15));
+ color=(color-0.5)*clamp(uTone.z,0.95,1.05)+0.5;
+ color*=clamp(uTone.y,0.9,1.1);
+ vec3 tint=srgbToLinear(saturate(uTint.rgb));
+ float baseTint=mix(0.10,0.055,dark)*clamp(uTone.w,0.0,1.5);
+ float tintAlpha=min(mix(0.18,0.10,dark),baseTint*mix(0.85,1.0,0.8));
+ color=mix(color,tint,tintAlpha);
+ vec2 lightDir=normalize(vec2(-0.55,-0.83));
+ float key=pow(saturate(dot(outward,lightDir)),5.0);
+ float opposite=pow(saturate(dot(outward,-lightDir)),7.0);
+ float width=max(dpi,1.0);
+ float rim=1.0-smoothstep(0.0,width,inside);
+ float fresnel=0.04+0.96*pow(1.0-saturate(cosI),5.0);
+ float H=saturate(rim*(0.035+uLight.x*key+uLight.y*opposite)+0.025*fresnel*(1.0-u));
+ H=saturate((H+0.018*(1.0-u)*key)*uOptics.y);
+ float shadeBand=smoothstep(width,2.0*width,inside)*(1.0-smoothstep(2.0*width,4.0*width,inside));
+ float innerOcclusion=uLight.z*shadeBand*opposite*(1.0-saturate(H*4.0));
+ vec3 shaded=saturate(color*(1.0-innerOcclusion));
+ vec3 result=1.0-(1.0-shaded)*(1.0-vec3(H));
+ outColor=vec4(result,1.0);
+}
+*/}
+function layerFragment(){/*
+#version 300 es
+precision highp float;
+uniform sampler2D uLowerSharp;
+uniform sampler2D uLowerSoft;
+uniform vec2 uViewport;
+uniform vec2 uSoftSize;
+uniform vec4 uRect;
+uniform vec4 uCapture;
+uniform vec4 uShape;
+uniform vec4 uOptics;
+uniform vec4 uTint;
+uniform vec4 uTone;
+uniform vec4 uLight;
+out vec4 outColor;
+float sat(float x){return clamp(x,0.0,1.0);}
+float sdRoundRect(vec2 p,vec2 halfSize,float radius){
+ radius=clamp(radius,0.0,min(halfSize.x,halfSize.y));
+ vec2 q=abs(p)-halfSize+radius;
+ return length(max(q,0.0))+min(max(q.x,q.y),0.0)-radius;
+}
+float sdShape(vec2 p,vec2 halfSize,float radius){
+ float v=sat((p.y+halfSize.y)/max(halfSize.y*2.0,1.0));
+ float belly=4.0*v*(1.0-v),strain=uOptics.w;
+ float amount=abs(strain)*belly*belly*(0.78+0.22*(strain>=0.0?1.0:-1.0)*(2.0*v-1.0));
+ float limit=min(7.0*uOptics.x,min(halfSize.y*0.07,halfSize.x*0.036));
+ float factor=1.0-min(amount,1.15)*limit/max(halfSize.x,1.0);
+ p.x/=factor;
+ return sdRoundRect(p,halfSize,radius)*factor;
+}
+vec3 readSharp(vec2 pixel){
+ vec2 cap=max(uCapture.xy,vec2(1.0));
+ vec2 lo=0.5/cap,hi=(uCapture.zw-0.5)/cap;
+ return texture(uLowerSharp,clamp(pixel/cap,lo,hi)).rgb;
+}
+vec3 readSoft(vec2 pixel){
+ vec2 cap=max(uSoftSize,vec2(1.0));
+ vec2 lo=0.5/cap,hi=(uSoftSize-0.5)/cap;
+ return texture(uLowerSoft,clamp(pixel/(cap*2.0),lo,hi)).rgb;
+}
+vec3 saturateBy(vec3 c,float value){
+ float l=dot(c,vec3(0.213,0.715,0.072));
+ return l+(c-l)*value;
+}
+vec3 srgbToLinear(vec3 c){
+ vec3 low=c/12.92;
+ vec3 high=pow(max((c+0.055)/1.055,vec3(0.0)),vec3(2.4));
+ return mix(high,low,step(c,vec3(0.04045)));
+}
+void main(){
+ vec2 halfSize=uRect.zw*0.5;
+ vec2 local=gl_FragCoord.xy-uRect.xy-halfSize;
+ float radius=min(uShape.x,min(halfSize.x,halfSize.y));
+ float d=sdShape(local,halfSize,radius);
+ float dpi=max(uOptics.x,0.01);
+ float isLayer3=step(2.5,uLight.w);
+ float shadowOffset=isLayer3>0.5?0.0:2.0*dpi;
+ float shadowDistance=sdShape(local-vec2(0.0,shadowOffset),halfSize,radius);
+ float outside=max(shadowDistance,0.0);
+ float shadowSigma=(isLayer3>0.5?3.0:5.0)*dpi;
+ float shadowGain=mix(isLayer3>0.5?0.04:0.08,isLayer3>0.5?0.05:0.10,sat(uTone.w));
+ float shadowAlpha=shadowGain*exp(-(outside*outside)/(2.0*shadowSigma*shadowSigma))*(1.0-smoothstep(2.0*shadowSigma,3.0*shadowSigma,outside))*uShape.w;
+ float coverage=1.0-smoothstep(-0.5,0.5,d);
+ if(coverage<0.0001){outColor=vec4(0.0,0.0,0.0,shadowAlpha);return;}
+ float shortSide=min(uRect.z,uRect.w);
+ float fade=smoothstep(0.0,12.0,shortSide/dpi);
+ float shortDip=shortSide/dpi;
+ float B=round(max(4.0,min(uShape.y,shortDip/3.2)))*dpi*fade;
+ float D=min(uShape.z*dpi,0.78*B)*fade;
+ float u=sat(max(-d,0.0)/max(B,0.001));
+ float eps=clamp(B*0.18,0.75,4.0);
+ vec2 g=vec2(sdShape(local+vec2(eps,0.0),halfSize,radius)-sdShape(local-vec2(eps,0.0),halfSize,radius),
+ sdShape(local+vec2(0.0,eps),halfSize,radius)-sdShape(local-vec2(0.0,eps),halfSize,radius))/(2.0*eps);
+ float gl=length(g);vec2 outward=g/max(gl,1e-5);
+ float x=max(u,0.0001),v=1.0-x;
+ const float lensPower=3.2,lensEdge=1.55;
+ float base=max(1.0-pow(v,lensPower),1e-6);
+ float slope=(0.80*lensEdge)*pow(v,lensPower-1.0)/pow(base,1.0-1.0/lensPower);
+ float cosI=inversesqrt(1.0+slope*slope),sinI=slope*cosI;
+ float sinT=sinI/1.50,cosT=sqrt(max(1.0-sinT*sinT,0.0));
+ float tanDelta=(sinI*cosT-cosI*sinT)/max(cosI*cosT+sinI*sinT,1e-5);
+ float bendNorm=sat(tanDelta/sqrt(1.50*1.50-1.0));
+ float joinFade=1.0-smoothstep(0.88,1.0,u);
+ float amount=D*bendNorm*joinFade*smoothstep(0.10,0.75,gl)*uShape.w;
+ vec2 offset=-outward*amount;
+ float inside=max(-d,0.0);
+ float split=min(amount*uOptics.y,0.45*dpi)*smoothstep(0.5*dpi,1.8*dpi,inside)*joinFade;
+ vec3 sharp=readSharp(gl_FragCoord.xy+offset),soft=readSoft(gl_FragCoord.xy+offset);
+ float crisp=0.82*(1.0-u)*(1.0-u);
+ vec3 color=mix(soft,sharp,crisp);
+ if(split>0.001){
+  vec3 r=mix(readSoft(gl_FragCoord.xy+offset+outward*split),readSharp(gl_FragCoord.xy+offset+outward*split),crisp);
+  vec3 b=mix(readSoft(gl_FragCoord.xy+offset-outward*split),readSharp(gl_FragCoord.xy+offset-outward*split),crisp);
+  color=vec3(r.r,color.g,b.b);
+ }
+ color=saturateBy(color,clamp(uTone.x,1.0,1.15));
+ color=(color-0.5)*clamp(uTone.z,0.95,1.05)+0.5;
+ color*=clamp(uTone.y,0.9,1.1);
+ color=mix(color,srgbToLinear(clamp(uTint.rgb,0.0,1.0)),sat(uTint.a));
+ vec2 L=normalize(vec2(-0.55,-0.83));
+ float key=pow(sat(dot(outward,L)),5.0),opposite=pow(sat(dot(outward,-L)),7.0);
+ float width=max(dpi,1.0),rim=1.0-smoothstep(0.0,width,inside);
+ float fresnel=0.04+0.96*pow(1.0-sat(cosI),5.0);
+ float H=sat(rim*(0.035+uLight.x*key+uLight.y*opposite)+0.025*fresnel*(1.0-u));
+ H=sat((H+0.018*(1.0-u)*key+0.06*uOptics.z)*uShape.w);
+ float shadeBand=smoothstep(width,2.0*width,inside)*(1.0-smoothstep(2.0*width,4.0*width,inside));
+ float innerOcclusion=uLight.z*shadeBand*opposite*(1.0-sat(H*4.0));
+ vec3 shaded=clamp(color*(1.0-innerOcclusion),0.0,1.0);
+ vec3 result=1.0-(1.0-shaded)*(1.0-vec3(sat(H)));
+ outColor=vec4(result*coverage*uShape.w,coverage*uShape.w);
+}
+*/}
+function makeProgram(fragmentFn){
+ const p=gl.createProgram(),vs=gl.createShader(gl.VERTEX_SHADER),fs=gl.createShader(gl.FRAGMENT_SHADER);
+ gl.shaderSource(vs,shaderSource(vertexShader));gl.compileShader(vs);
+ gl.shaderSource(fs,shaderSource(fragmentFn));gl.compileShader(fs);
+ if(!gl.getShaderParameter(vs,gl.COMPILE_STATUS)||!gl.getShaderParameter(fs,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(vs)+" "+gl.getShaderInfoLog(fs));
+ gl.attachShader(p,vs);gl.attachShader(p,fs);gl.linkProgram(p);
+ if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));
+ return p;
+}
+function loc(p,n){return gl.getUniformLocation(p,n);}
+function texture(w,h){
+ const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
+ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+ gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+ return t;
+}
+function target(w,h){
+ const tex=texture(w,h),fb=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,fb);gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+ return {tex,fb,w,h};
+}
+function resize(){
+ const r=frame.getBoundingClientRect();dpr=Math.max(0.01,window.devicePixelRatio||1);
+ frameW=Math.max(1,Math.round(r.width));frameH=Math.max(1,Math.round(r.height));
+ const w=Math.max(1,Math.round(frameW*dpr)),h=Math.max(1,Math.round(frameH*dpr));
+ if(canvas.width===w&&canvas.height===h&&(!gl||targets.base))return;
+ canvas.width=w;canvas.height=h;bgCanvas.width=w;bgCanvas.height=h;
+ if(!gl)return;
+ const hw=Math.max(1,Math.ceil(w/2)),hh=Math.max(1,Math.ceil(h/2));
+ targets={base:target(w,h),a:target(w,h),b:target(w,h),blurX:target(hw,hh),blur:target(hw,hh)};
+ gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,w,h);
+ bgTex=texture(w,h);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+}
+function useTex(unit,tex){
+ gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D,tex);
+}
+function drawFull(p,fb,w,h){
+ gl.bindFramebuffer(gl.FRAMEBUFFER,fb);gl.viewport(0,0,w,h);gl.drawArrays(gl.TRIANGLES,0,3);
+}
+function drawCopy(src,dest){
+ const p=programs.copy;gl.disable(gl.BLEND);gl.useProgram(p);useTex(0,src);
+ gl.uniform1i(loc(p,"uTexture"),0);gl.uniform2f(loc(p,"uSize"),targets.base.w,targets.base.h);
+ drawFull(p,dest,targets.base.w,targets.base.h);
+}
+function gaussian(source,sigma){
+ const p=programs.blur,hw=targets.blur.w,hh=targets.blur.h;
+ gl.disable(gl.BLEND);gl.useProgram(p);useTex(0,source);
+ gl.uniform1i(loc(p,"uInput"),0);gl.uniform2f(loc(p,"uInputSize"),targets.base.w,targets.base.h);
+ gl.uniform1f(loc(p,"uSigma"),sigma*dpr);gl.uniform1i(loc(p,"uAxis"),0);gl.uniform1i(loc(p,"uDownsample"),1);
+ drawFull(p,targets.blurX.fb,hw,hh);
+ gl.useProgram(p);useTex(0,targets.blurX.tex);
+ gl.uniform1i(loc(p,"uInput"),0);gl.uniform2f(loc(p,"uInputSize"),hw,hh);
+ gl.uniform1f(loc(p,"uSigma"),sigma*dpr*0.5);gl.uniform1i(loc(p,"uAxis"),1);gl.uniform1i(loc(p,"uDownsample"),0);
+ drawFull(p,targets.blur.fb,hw,hh);
+ return targets.blur.tex;
+}
+function setPanelUniforms(p,rect,soft){
+ const x=rect.x*dpr,y=(frameH-rect.y-rect.h)*dpr,w=rect.w*dpr,h=rect.h*dpr;
+ const sw=targets.blur.w,sh=targets.blur.h;
+ gl.uniform1i(loc(p,"uSharp"),0);gl.uniform1i(loc(p,"uSoft"),1);useTex(0,bgTex);useTex(1,soft);
+ gl.uniform4f(loc(p,"uRect"),x,y,w,h);
+ gl.uniform4f(loc(p,"uShape"),rect.r*dpr,56.0,0.0,0.0);
+ gl.uniform4f(loc(p,"uOptics"),dpr,1.0,0.030,0.0);
+ gl.uniform4f(loc(p,"uTone"),1.15,0.96,1.0,1.0);
+ gl.uniform4f(loc(p,"uTint"),30/255,30/255,34/255,1.0);
+ gl.uniform4f(loc(p,"uLight"),0.26,0.09,0.012,1.0);
+ gl.uniform2f(loc(p,"uViewport"),targets.base.w,targets.base.h);gl.uniform2f(loc(p,"uSoftSize"),sw,sh);
+}
+function drawPanel(rect){
+ const soft=gaussian(bgTex,1.4),p=programs.panel;
+ drawCopy(bgTex,targets.base.fb);
+ gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);gl.useProgram(p);setPanelUniforms(p,rect,soft);
+ drawFull(p,targets.base.fb,targets.base.w,targets.base.h);gl.disable(gl.BLEND);
+}
+function drawLayerPass(lower,destination,soft,shapes,layer){
+ drawCopy(lower,destination);
+ const p=programs.layer;gl.useProgram(p);useTex(0,lower);useTex(1,soft);
+ gl.uniform1i(loc(p,"uLowerSharp"),0);gl.uniform1i(loc(p,"uLowerSoft"),1);
+ gl.uniform2f(loc(p,"uViewport"),targets.base.w,targets.base.h);
+ gl.uniform2f(loc(p,"uSoftSize"),targets.blur.w,targets.blur.h);
+ gl.uniform4f(loc(p,"uCapture"),targets.base.w,targets.base.h,targets.base.w,targets.base.h);
+ gl.uniform4f(loc(p,"uTone"),1.12,0.96,1.0,1.0);
+ gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
+ for(const s of shapes){
+  if(s.layer!==layer||s.opacity<=0.005)continue;
+  const x=s.x*dpr,y=(frameH-s.y-s.h)*dpr,w=s.w*dpr,h=s.h*dpr;
+  const short=Math.min(s.w,s.h),long=Math.max(s.w,s.h);
+  const pill=short>0&&long>=short*1.6&&s.r>=short*.35;
+  const band=pill?12:(layer===2?28:14),disp=pill?6:(layer===2?12:7);
+  gl.uniform4f(loc(p,"uRect"),x,y,w,h);
+  gl.uniform4f(loc(p,"uShape"),s.r*dpr,band,disp,s.opacity);
+  gl.uniform4f(loc(p,"uOptics"),dpr,0.030,0.0,0.0);
+  gl.uniform4f(loc(p,"uTint"),30/255,30/255,34/255,layer===2?0.035:0.018);
+  gl.uniform4f(loc(p,"uTone"),1.12,0.96,1.0,1.0);
+  const gain=layer===2?0.8:0.65;
+  gl.uniform4f(loc(p,"uLight"),0.26*gain,0.09*gain,layer===2?0.012:0.010,layer);
+  drawFull(p,destination,targets.base.w,targets.base.h);
+ }
+ gl.disable(gl.BLEND);
+}
+function compile(){
+ try{
+  if(!gl)throw Error("WebGL2 unavailable");
+  programs={copy:makeProgram(copyFragment),blur:makeProgram(blurFragment),panel:makeProgram(panelFragment),layer:makeProgram(layerFragment)};
+  buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+  gl.disable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);gl.disable(gl.DITHER);
+  resize();webgl=true;
+ }catch(e){webgl=false;document.body.classList.add("fallback");warn.textContent="当前浏览器没有可用的 WebGL2，正在使用 CSS 磨砂效果。";}
+}
+function background(t){
+ const c=bgCtx,w=bgCanvas.width,h=bgCanvas.height;
+ if(!w||!h)return;
+ const motion=reduced.matches?0:t;
+ const g=c.createLinearGradient(0,0,w,h);
+ g.addColorStop(0,"#f9ad79");g.addColorStop(.24,"#ed6ea7");g.addColorStop(.49,"#7564d2");g.addColorStop(.72,"#34b8cb");g.addColorStop(1,"#bddb7d");
+ c.fillStyle=g;c.fillRect(0,0,w,h);
+ const rg=c.createRadialGradient(w*(.18+.05*Math.sin(motion*.26)),h*.28,0,w*.18,h*.28,w*.7);
+ rg.addColorStop(0,"#fff1c973");rg.addColorStop(1,"#fff0");
+ c.fillStyle=rg;c.fillRect(0,0,w,h);
+ c.save();c.translate((motion*13*dpr)%(120*dpr),0);c.rotate(-.42);
+ for(let i=-12;i<24;i++){c.fillStyle=i%2?"#172c6b48":"#f9f4ff48";c.fillRect(i*72*dpr,-h,22*dpr,h*3);}
+ c.restore();
+ const circles=[[.15,.72,.11,"#ffdb57"],[.82,.76,.13,"#f54779"],[.75,.20,.09,"#5bf1da"],[.38,.34,.07,"#fff0a0"]];
+ circles.forEach((v,i)=>{const x=(v[0]+.025*Math.sin(motion*.35+i))*w,y=(v[1]+.018*Math.cos(motion*.27+i))*h,r=v[2]*Math.min(w,h);const q=c.createRadialGradient(x-r*.35,y-r*.4,r*.05,x,y,r);q.addColorStop(0,"#ffffffdd");q.addColorStop(.18,v[3]);q.addColorStop(1,v[3]+"55");c.fillStyle=q;c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();});
+ c.save();c.globalAlpha=.80;c.fillStyle="#fff";c.font="700 "+Math.round(60*dpr)+"px Segoe UI, Microsoft YaHei UI, sans-serif";c.fillText("光线会记住形状",w*.10,h*.50);
+ c.globalAlpha=.7;c.font="600 "+Math.round(18*dpr)+"px Segoe UI, Microsoft YaHei UI, sans-serif";c.letterSpacing="5px";c.fillText("液态玻璃   ·   折射演示",w*.105,h*.57);c.restore();
+}
+function calendar(){
+ const d=document.getElementById("calendarDays");if(!d)return;
+ const cells=[];
+ for(let i=0;i<35;i++){const day=i<6?0:i-5; if(day>30)cells.push('<span class="day muted">'+(day-30)+'</span>');else if(day===0)cells.push('<span class="day"></span>');else cells.push('<span class="day '+(day===8?"today":"")+'">'+day+'</span>');}
+ d.innerHTML=cells.join("");
+}
+function spring(v){
+ const x=Math.max(0,Math.min(1,v)),end=1-7*Math.exp(-6);
+ return (1-(1+6*x)*Math.exp(-6*x))/end;
+}
+function lerp(a,b,t){return a+(b-a)*t;}
+function viewRect(mode,scale){
+ const sz=sizes[mode],s=mode==="home"?scale:1;
+ return {w:sz[0]*s,h:sz[1]*s,r:sz[2]*s,baseW:sz[0],baseH:sz[1]};
+}
+function stageHomeScale(){return Math.min(1,(frameW-30)/960,(frameH-30)/512);}
+function mixState(a,b,u,scale,extra){
+ if(reduced.matches)u=u<.5?0:1;else u=spring(u);
+ const A=viewRect(a,scale),B=viewRect(b,scale),weights={capsule:0,peek:0,home:0};
+ weights[a]=1-u;weights[b]=u;
+ return {w:lerp(A.w,B.w,u),h:lerp(A.h,B.h,u),r:lerp(A.r,B.r,u),weights:weights,shift:extra||0,mode:u<.5?a:b};
+}
+function stateFor(t,scene){
+ const scale=stageHomeScale();
+ if(scene==="morph"){
+  const z=((t%6)+6)%6;
+  if(z<1)return mixState("capsule","capsule",0,scale,0);
+  if(z<2.5)return mixState("capsule","peek",(z-1)/1.5,scale,0);
+  if(z<4.5)return mixState("peek","home",(z-2.5)/2,scale,0);
+  return mixState("home","capsule",(z-4.5)/1.5,scale,0);
+ }
+ if(scene==="drag"){
+  const shift=reduced.matches?0:Math.sin(t*Math.PI*2/4)*52;
+  return mixState("home","home",0,scale,shift);
+ }
+ if(scene==="peek")return mixState("peek","peek",0,scale,0);
+ const now=t;
+ const u=live.to===live.from?1:Math.max(0,Math.min(1,(now-live.start)/live.duration));
+ const s=mixState(live.from,live.to,u,scale,0);
+ s.shift=liveOffset.x;s.shiftY=liveOffset.y;
+ return s;
+}
+function shapeRect(panel,scale,baseW,baseH,x,y,w,h,r,layer,opacity){
+ return {x:panel.x+x*(panel.w/baseW),y:panel.y+y*(panel.h/baseH),w:w*(panel.w/baseW),h:h*(panel.h/baseH),r:r*Math.min(panel.w/baseW,panel.h/baseH),layer:layer,opacity:opacity};
+}
+function shapesFor(state,panel){
+ const result=[];
+ function add(mode,weight,shapes){
+  if(weight<=.005)return;
+  const base=sizes[mode],sx=panel.w/base[0],sy=panel.h/base[1];
+  shapes.forEach(v=>result.push(shapeRect(panel,sx,base[0],base[1],v[0],v[1],v[2],v[3],v[4],v[5],weight)));
+ }
+ add("peek",state.weights.peek,[[14,61,52,48,10,2],[195,75,31,31,16,3],[231,73,36,36,18,3],[272,75,31,31,16,3]]);
+ add("home",state.weights.home,[[28,130,176,224,28,2],[220,116,256,292,24,2],[528,104,280,316,30,2],[604,140,128,128,22,3],[624,354,34,34,17,3],[657,350,42,42,21,3],[699,354,34,34,17,3],[354,444,252,44,24,2],[620,444,44,44,22,3],[944,172,6,168,4,3]]);
+ return result;
+}
+function setView(name,rect,opacity){
+ const v=views[name];if(!v)return;
+ const base=sizes[name];
+ v.style.width=base[0]+"px";v.style.height=base[1]+"px";
+ v.style.transform="translate("+rect.x+"px,"+rect.y+"px) scale("+rect.w/base[0]+","+rect.h/base[1]+")";
+ v.style.opacity=String(Math.max(0,Math.min(1,opacity)));
+}
+function setEyes(t,scene){
+ let gx=0,gy=0,blink=false;
+ if(scene==="peek"){gx=Math.sin(t*2.1)*1.7;gy=Math.cos(t*1.7)*1.2;blink=Math.abs(t-1.12)<.085;}
+ else if(scene==="morph"){gx=Math.sin(t*1.2)*1.2;gy=Math.cos(t*.9)*.8;blink=Math.abs((t%4.8)-3.2)<.08;}
+ else if(scene==="drag"){gx=Math.sin(t*1.1)*1.1;gy=Math.cos(t*.8)*.6;}
+ else{gx=(mouse.x-.5)*3.2;gy=(mouse.y-.5)*2.2;}
+ document.querySelectorAll(".pupil").forEach(p=>p.style.transform="translate("+gx+"px,"+gy+"px)");
+ document.querySelectorAll(".sphere .eye").forEach(e=>e.style.transform=blink?"scaleY(.12)":"scaleY(1)");
+}
+function paint(t,scene){
+ resize();background(t);
+ const s=stateFor(t,scene),x=(frameW-s.w)/2+(s.shift||0)+(s.shiftY?0:0),y=(frameH-s.h)/2+(s.shiftY||0);
+ const panel={x:x,y:y,w:s.w,h:s.h,r:s.r};
+ glassFallback.style.width=panel.w+"px";glassFallback.style.height=panel.h+"px";glassFallback.style.borderRadius=panel.r+"px";glassFallback.style.transform="translate("+panel.x+"px,"+panel.y+"px)";
+ setView("capsule",panel,s.weights.capsule);setView("peek",panel,s.weights.peek);setView("home",panel,s.weights.home);
+ setEyes(t,scene);
+ const play=(scene==="peek"?t>=1.5:scene==="live"?manualPlay:false);
+ document.querySelectorAll("#peekPlay,#homePlay").forEach(b=>{b.textContent=play?"Ⅱ":"▶";b.classList.toggle("pressed",play);});
+ if(!webgl)return;
+ gl.bindTexture(gl.TEXTURE_2D,bgTex);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,gl.RGBA,gl.UNSIGNED_BYTE,bgCanvas);
+ const panelGL={x:panel.x,y:panel.y,w:panel.w,h:panel.h,r:panel.r};
+ drawPanel(panelGL);
+ const shapes=shapesFor(s,panel);
+ const sigma2=3.8,sigma3=1.6;
+ const soft2=gaussian(targets.base.tex,sigma2);drawLayerPass(targets.base.tex,targets.a.fb,soft2,shapes,2);
+ const soft3=gaussian(targets.a.tex,sigma3);drawLayerPass(targets.a.tex,targets.b.fb,soft3,shapes,3);
+ gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,canvas.width,canvas.height);gl.disable(gl.BLEND);
+ const cp=programs.copy;gl.useProgram(cp);useTex(0,targets.b.tex);gl.uniform1i(loc(cp,"uTexture"),0);gl.uniform2f(loc(cp,"uSize"),targets.base.w,targets.base.h);gl.drawArrays(gl.TRIANGLES,0,3);
+}
+function updateModeButtons(mode){
+ document.querySelectorAll(".mode-button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.mode===mode)));
+}
+function requestMode(mode,t){
+ const current=live.to;live={from:current,to:mode,start:t,duration:mode==="home"?.72:mode==="peek"?.48:.58};
+ updateModeButtons(mode);
+}
+function renderAt(t,scene){
+ const safe=Number.isFinite(Number(t))?Number(t):0;
+ lastT=safe;paint(safe,scene||"live");
+ return {time:safe,scene:scene||"live",webgl:webgl,width:canvas.width,height:canvas.height};
+}
+function nowSeconds(){return performance.now()/1000-liveStarted;}
+if(gl){
+ try{compile();}catch(e){webgl=false;document.body.classList.add("fallback");warn.textContent="当前浏览器没有可用的 WebGL2，正在使用 CSS 磨砂效果。";}
+}else{document.body.classList.add("fallback");warn.textContent="当前浏览器没有可用的 WebGL2，正在使用 CSS 磨砂效果。";}
+calendar();
+if(!captureScene){document.querySelectorAll(".mode-button").forEach(b=>b.addEventListener("click",()=>requestMode(b.dataset.mode,nowSeconds())));
+ document.getElementById("peekPlay").addEventListener("click",e=>{e.stopPropagation();manualPlay=!manualPlay;});
+ document.getElementById("homePlay").addEventListener("click",e=>{e.stopPropagation();manualPlay=!manualPlay;});
+ document.querySelectorAll(".control").forEach(b=>b.addEventListener("pointerdown",e=>e.stopPropagation()));
+ frame.addEventListener("pointerdown",e=>{const r=frame.getBoundingClientRect();const x=e.clientX-r.left,y=e.clientY-r.top;const state=stateFor(nowSeconds(),"live");if(x>(frameW-state.w)/2-10&&x<(frameW+state.w)/2+10&&y>(frameH-state.h)/2-10&&y<(frameH+state.h)/2+10){dragging={x:e.clientX,y:e.clientY,ox:liveOffset.x,oy:liveOffset.y};frame.setPointerCapture(e.pointerId);wasDragged=false;}});
+ frame.addEventListener("pointermove",e=>{const r=frame.getBoundingClientRect();mouse={x:(e.clientX-r.left)/Math.max(1,r.width),y:(e.clientY-r.top)/Math.max(1,r.height)};if(dragging){const dx=e.clientX-dragging.x,dy=e.clientY-dragging.y;if(Math.abs(dx)+Math.abs(dy)>3)wasDragged=true;liveOffset={x:dragging.ox+dx,y:dragging.oy+dy};return;}const t=nowSeconds(),state=stateFor(t,"live");const inside=Math.abs(mouse.x*frameW-frameW/2)<state.w/2&&Math.abs(mouse.y*frameH-frameH/2)<state.h/2;if(inside&&live.to==="capsule")requestMode("peek",t);});
+ frame.addEventListener("pointerup",e=>{if(!dragging)return;dragging=null;if(!wasDragged)requestMode("home",nowSeconds());});
+ frame.addEventListener("pointercancel",()=>{dragging=null;});
+}
+window.GlassDeskShowcase={renderAt:function(t,scene){return renderAt(t,scene);},status:function(){return {webgl:webgl,width:canvas.width,height:canvas.height};}};
+if(captureScene){
+ const dim=captureScene==="peek"?[560,320]:[720,450];frame.style.width=dim[0]+"px";frame.style.height=dim[1]+"px";frame.style.aspectRatio="auto";
+ requestAnimationFrame(()=>renderAt(0,captureScene));
+}else{
+ function loop(){const t=nowSeconds();renderAt(t,"live");requestAnimationFrame(loop);}
+ requestAnimationFrame(loop);
+}
+window.addEventListener("resize",()=>renderAt(lastT,captureScene||"live"));
+})();
+</script>
 </body>
 </html>

@@ -7,6 +7,9 @@
 // No music, forms, or application policy is held by the native layer.
 // Liquid material is renderer state. Enabled intent survives capture fallback.
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassEnabled(void* context,int enabled);
+extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassMotionActive(void* context,int active);
+struct GDLiquidGlassSettings;
+extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassSettings(void* context,GDLiquidGlassSettings const* settings);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassStatus(void* context,wchar_t* text,unsigned capacity);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSaveLiquidGlassDiagnosticFrame(void* context,wchar_t const* path);
 // Explicit QA screenshot window, not pixel output. Frozen material; bounded
@@ -17,6 +20,18 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDGetDiagnosticSnapshotStatus
 struct GDFrame { float width, height, radius, blur, tint; int solid; };
 extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrameWithTension(void* context,GDFrame const* frame,float tension);
 extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyPositionedFrameWithTension(void* context,GDFrame const* frame,float tension,int screenX,int screenY) noexcept;
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyContinuousPositionedFrameWithTension(void* context,GDFrame const* frame,float tension,float screenX,float screenY) noexcept;
+// Versioned additive scene ABI. A scene snapshot is copied and committed with
+// the positioned frame; old GDFrame entry points remain valid for empty scenes.
+struct GDGlassShapeV1
+{
+    uint32_t id,parentId,layer,groupId;
+    float xDip,yDip,widthDip,heightDip,radiusDip,materialize,press;
+    uint32_t enabled;
+};
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplySceneFrameV1(void* context,
+    GDFrame const* frame,float tension,float screenX,float screenY,uint64_t sequence,
+    GDGlassShapeV1 const* shapes,uint32_t count,uint32_t stride,uint32_t structSize,uint32_t version) noexcept;
 struct GDContext { int x, y; float width, height; unsigned dpi; };
 struct GDPoint { float x, y; };
 struct GDPointer { int kind; float x, y; int screenX, screenY, controlId; double value; };
@@ -61,6 +76,7 @@ struct GDAccessible
 using GDCallback = void (__stdcall*)(void* user, GDPointer const* event);
 
 static_assert(sizeof(GDFrame) == 24);
+static_assert(sizeof(GDGlassShapeV1) == 48);
 static_assert(sizeof(GDContext) == 20);
 static_assert(sizeof(GDPointer) == 32);
 static_assert(sizeof(GDOp) == 64);

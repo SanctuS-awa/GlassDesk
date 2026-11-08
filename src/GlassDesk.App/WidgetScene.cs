@@ -15,7 +15,6 @@ public sealed partial class WidgetScene : IDisposable
     readonly NativeWidgetHost _host;
     readonly ContainerVisual _root;
     readonly ContainerVisual _bodyRoot;
-    readonly CompositionRoundedRectangleGeometry _bodyClip;
     readonly Dictionary<WidgetForm, CrossfadeSurfaceVisual> _metadata = new();
     readonly Dictionary<WidgetForm, (string Title, string Artist, float Width, uint Text, uint Secondary,
         TypographyIdentity Typography, float OffsetX, float OffsetY, float ArtistOffset)> _metadataKeys = new();
@@ -51,7 +50,8 @@ public sealed partial class WidgetScene : IDisposable
     // pressed destination action. Release only activates when the action still matches.
     int _dockPressedAction = -1;
     public double? NextCompanionWake => _form == WidgetForm.Capsule ? _placement.NextWakeTime : null;
-    public bool SceneMotionActive => _chrome.NeedsTick || CompanionMotionActive || _ownedControlMoving || ReadingSupportMotionActive;
+    public bool SceneMotionActive => PresentationMotionActive || _chrome.NeedsTick || CompanionMotionActive || _ownedControlMoving || ReadingSupportMotionActive
+        || _homeVisual?.MotionActive == true || _buttons.Values.Any(button => button.MotionActive);
     public PointerCaptureOwner CaptureOwner => _captureOwner;
     readonly ContainerVisual _peekButtons;
     readonly ContainerVisual _detailsButtons;
@@ -122,16 +122,18 @@ public sealed partial class WidgetScene : IDisposable
     uint _button = 0x81FFFFFF;
     uint _track = 0x293B526B;
     Vector2 _presentedSize = new(200, 52);
-    Vector2 _transitionStartSize = new(200, 52);
     Vector2 _transitionEndSize = new(200, 52);
     Vector3 _contentWeights = new(1, 0, 0);
-    Vector3 _contentStart = new(1, 0, 0);
-    Vector3 _contentEnd = new(1, 0, 0);
-    Vector2 _artworkClipStart = new(0, 52);
-    Vector2 _artworkClipEnd = new(0, 52);
+    readonly SpringValue[] _layerOpacity = [new(1), new(0), new(0)];
+    readonly SpringValue[] _layerShift = [new(0), new(0), new(0)];
+    readonly SpringValue[] _layerScale = [new(1), new(1), new(1)];
+    readonly SpringValue _detailsBodyOpacity = new(0), _peekTransportOpacity = new(0), _detailsTransportOpacity = new(0);
+    readonly SpringValue _artworkClipTop = new(0), _artworkClipBottom = new(52);
+    readonly MotionController _artworkTransition = new(new(12, 14, 24, 24, 6));
+    public bool PresentationMotionActive => _layerOpacity.Concat(_layerShift).Concat(_layerScale)
+        .Concat([_detailsBodyOpacity, _peekTransportOpacity, _detailsTransportOpacity, _artworkClipTop, _artworkClipBottom])
+        .Any(channel => channel.Active(_motionNow)) || _artworkTransition.Active;
     WidgetPose _artworkPose = new(12, 14, 24, 24, 6);
-    WidgetPose _artworkStart = new(12, 14, 24, 24, 6);
-    WidgetPose _artworkEnd = new(12, 14, 24, 24, 6);
     byte[]? _lastArtwork;
     bool _artworkDirty = true;
     bool _drawingInvalidated = true;
@@ -176,8 +178,7 @@ public sealed partial class WidgetScene : IDisposable
         _artworkTimer.Tick += OnArtworkTransitionCompleted;
         _root = host.Compositor.CreateContainerVisual();
         _bodyRoot = host.Compositor.CreateContainerVisual();
-        _bodyClip = host.Compositor.CreateRoundedRectangleGeometry();
-        _bodyRoot.Clip = host.Compositor.CreateGeometricClip(_bodyClip);
+        // The native host clips content and glass with one shared silhouette.
         _root.Children.InsertAtTop(_bodyRoot);
         _content = host.Compositor.CreateSpriteVisual();
         _capsuleContent = host.Compositor.CreateSpriteVisual();
@@ -403,7 +404,7 @@ public sealed partial class WidgetScene : IDisposable
     {
         EnsureUiThread();
         float height = Math.Clamp(heightDip, 160, 512);
-        float width = Math.Clamp(widthDip, 64, 360);
+        float width = Math.Clamp(widthDip, 64, HomeLayout.DashboardWidth);
         if (Math.Abs(height - _detailsHeight) < .1f && Math.Abs(width - _detailsWidth) < .1f) return;
         _detailsHeight = height;
         _detailsWidth = width;
@@ -485,21 +486,23 @@ public sealed partial class WidgetScene : IDisposable
             bool formChanged = priorContent is not null && (priorContent.Form != form || _transitionEndSize != size);
             if (formChanged)
             {
-                _contentStart = _contentWeights;
-                _contentEnd = WeightsFor(form);
-                _artworkStart = _artworkPose;
-                _artworkEnd = ArtworkPoseFor(form);
-                _transitionStartSize = _presentedSize;
+                RetargetContent(form, preferences.ReducedMotion);
+                var artworkTarget = ArtworkPoseFor(form);
                 _transitionEndSize = size;
-                _artworkClipStart = new(_artworkViewportClip.TopInset, _presentedSize.Y - _artworkViewportClip.BottomInset);
-                _artworkClipEnd = ArtworkViewportFor(form, size);
+                var artworkClip = ArtworkViewportFor(form, size);
+                _artworkTransition.Retarget(artworkTarget, _motionNow, 300, preferences.ReducedMotion);
+                _artworkClipTop.Retarget(artworkClip.X, _motionNow, 280, preferences.ReducedMotion);
+                _artworkClipBottom.Retarget(artworkClip.Y, _motionNow, 280, preferences.ReducedMotion);
             }
             else if (priorContent is null || preferences.ReducedMotion)
             {
-                _contentStart = _contentEnd = _contentWeights = WeightsFor(form);
-                _artworkStart = _artworkEnd = _artworkPose = ArtworkPoseFor(form);
-                _transitionStartSize = _transitionEndSize = size;
-                _artworkClipStart = _artworkClipEnd = ArtworkViewportFor(form, size);
+                _contentWeights = WeightsFor(form);
+                RetargetContent(form, immediate: true);
+                _artworkPose = ArtworkPoseFor(form);
+                _transitionEndSize = size;
+                var artworkClip = ArtworkViewportFor(form, size);
+                _artworkTransition.Jump(_artworkPose);
+                _artworkClipTop.Jump(artworkClip.X); _artworkClipBottom.Jump(artworkClip.Y);
             }
             if (_drawingInvalidated && priorContent is not null) RedrawOutgoingLayers(form);
             var operations = new List<SurfaceOp>();
@@ -625,7 +628,7 @@ public sealed partial class WidgetScene : IDisposable
     void UpdateTimelineCore(MediaSnapshot media, long monotonicNow)
     {
         _media = media;
-        if (_form != WidgetForm.Details || WidgetsPage || !media.Connected) return;
+        if (_form != WidgetForm.Details || WidgetsPage || HomePage || !media.Connected) return;
         bool valid = media.Timeline?.Valid == true;
         var position = _seekPreview ?? PositionAt(media, monotonicNow);
         var duration = valid ? media.Timeline!.End - media.Timeline.Start : TimeSpan.Zero;
@@ -718,35 +721,22 @@ public sealed partial class WidgetScene : IDisposable
         _root.Opacity = pose.Opacity;
         _root.Size = _presentedSize = new(pose.Width, pose.Height);
         _bodyRoot.Size = _presentedSize;
-        _bodyClip.Size = _presentedSize; _bodyClip.CornerRadius = new(pose.Radius);
-        float heightDelta = _transitionEndSize.Y - _transitionStartSize.Y;
-        float widthDelta = _transitionEndSize.X - _transitionStartSize.X;
-        float progress = Math.Abs(heightDelta) > .1f
-            ? (pose.Height - _transitionStartSize.Y) / heightDelta
-            : Math.Abs(widthDelta) > .1f ? (pose.Width - _transitionStartSize.X) / widthDelta : 1;
-        progress = Math.Clamp(progress, 0, 1);
-        _contentWeights = new(
-            LayerOpacity(_contentStart.X, _contentEnd.X, progress),
-            LayerOpacity(_contentStart.Y, _contentEnd.Y, progress),
-            LayerOpacity(_contentStart.Z, _contentEnd.Z, progress));
+        _contentWeights = new((float)Math.Clamp(_layerOpacity[0].Sample(_motionNow).Position, 0, 1),
+            (float)Math.Clamp(_layerOpacity[1].Sample(_motionNow).Position, 0, 1),
+            (float)Math.Clamp(_layerOpacity[2].Sample(_motionNow).Position, 0, 1));
         ApplyContentWeights(_contentWeights);
         _artworkViewport.Size = _presentedSize;
-        _artworkViewportClip.TopInset = float.Lerp(_artworkClipStart.X, _artworkClipEnd.X, progress);
-        _artworkViewportClip.BottomInset = Math.Max(0, pose.Height - float.Lerp(_artworkClipStart.Y, _artworkClipEnd.Y, progress));
-        _artworkPose = new(
-            float.Lerp(_artworkStart.X, _artworkEnd.X, progress),
-            float.Lerp(_artworkStart.Y, _artworkEnd.Y, progress),
-            float.Lerp(_artworkStart.Width, _artworkEnd.Width, progress),
-            float.Lerp(_artworkStart.Height, _artworkEnd.Height, progress),
-            float.Lerp(_artworkStart.Radius, _artworkEnd.Radius, progress));
+        _artworkViewportClip.TopInset = Math.Max(0, (float)_artworkClipTop.Sample(_motionNow).Position);
+        _artworkViewportClip.BottomInset = Math.Max(0, pose.Height - (float)_artworkClipBottom.Sample(_motionNow).Position);
+        _artworkPose = _artworkTransition.Sample(_motionNow);
         _artwork.Offset = _previousArtwork.Offset = new(_artworkPose.X, _artworkPose.Y, 0);
         _artworkMotion.CenterPoint = _previousArtworkMotion.CenterPoint = new(_artworkPose.X + _artworkPose.Width / 2, _artworkPose.Y + _artworkPose.Height / 2, 0);
         float artworkScale = _artworkPose.Width / 208;
         _artwork.Scale = _previousArtwork.Scale = new(artworkScale, artworkScale, 1);
         _artworkClip.CornerRadius = _previousArtworkClip.CornerRadius = new(_artworkPose.Radius / artworkScale);
-        _capsuleContent.Offset = new((pose.Width - _capsuleContent.Size.X) / 2, 0, 0);
-        _peekContent.Offset = new((pose.Width - _peekContent.Size.X) / 2, 0, 0);
-        _content.Offset = new((pose.Width - _content.Size.X) / 2, 0, 0);
+        PresentLayer(_capsuleContent, 0, pose.Width);
+        PresentLayer(_peekContent, 1, pose.Width);
+        PresentLayer(_content, 2, pose.Width);
         _peekButtons.Offset = _peekContent.Offset; _detailsButtons.Offset = _content.Offset;
         _detailsViewport.Offset = new((pose.Width - _content.Size.X) / 2,
             ResponsiveDetails() is { } details ? details.BodyViewport.Y : 56, 0);
@@ -771,23 +761,46 @@ public sealed partial class WidgetScene : IDisposable
         _ => new(0, 0, 1)
     };
 
-    static float LayerOpacity(float from, float to, float progress)
+    void RetargetContent(WidgetForm form, bool immediate)
     {
-        float phase = to > from ? Math.Clamp((progress - .12f) / .76f, 0, 1) : Math.Clamp(progress / .65f, 0, 1);
-        return float.Lerp(from, to, phase * phase * (3 - 2 * phase));
+        var target = WeightsFor(form);
+        for (int i = 0; i < 3; i++)
+        {
+            bool entering = target[i] > 0;
+            bool hidden = _layerOpacity[i].Sample(_motionNow).Position <= .001;
+            if (entering && hidden && !immediate) { _layerShift[i].Jump(9); _layerScale[i].Jump(.985); }
+            _layerOpacity[i].Retarget(target[i], _motionNow, entering ? 230 : 130, immediate, entering && hidden ? 45 : 0);
+            _layerShift[i].Retarget(entering ? 0 : -5, _motionNow, 280, immediate);
+            _layerScale[i].Retarget(entering ? 1 : .99, _motionNow, 280, immediate);
+        }
+        _detailsBodyOpacity.Retarget(target.Z, _motionNow, target.Z > 0 ? 240 : 110, immediate, target.Z > 0 ? 70 : 0);
+        _peekTransportOpacity.Retarget(target.Y, _motionNow, target.Y > 0 ? 230 : 100, immediate, target.Y > 0 ? 95 : 0);
+        _detailsTransportOpacity.Retarget(target.Z, _motionNow, target.Z > 0 ? 230 : 100, immediate, target.Z > 0 ? 110 : 0);
+    }
+
+    void PresentLayer(Visual visual, int index, float width)
+    {
+        float shift = (float)_layerShift[index].Sample(_motionNow).Position;
+        float scale = (float)_layerScale[index].Sample(_motionNow).Position;
+        visual.CenterPoint = new(visual.Size.X / 2, 0, 0);
+        visual.Scale = new(scale, scale, 1);
+        visual.Offset = new((width - visual.Size.X) / 2, shift, 0);
     }
 
     void ApplyContentWeights(Vector3 weights)
     {
+        float bodyWeight = (float)Math.Clamp(_detailsBodyOpacity.Sample(_motionNow).Position, 0, 1);
+        float peekTransport = (float)Math.Clamp(_peekTransportOpacity.Sample(_motionNow).Position, 0, 1);
+        float detailsTransport = (float)Math.Clamp(_detailsTransportOpacity.Sample(_motionNow).Position, 0, 1);
         _capsuleContent.Opacity = weights.X;
         _peekContent.Opacity = weights.Y;
         _content.Opacity = weights.Z;
-        _detailsViewport.Opacity = HomePage ? 0 : weights.Z;
-        if (_homeVisual is not null) _homeVisual.Visual.Opacity = HomePage ? weights.Z : 0;
+        _detailsViewport.Opacity = HomePage ? 0 : bodyWeight;
+        if (_homeVisual is not null) _homeVisual.Visual.Opacity = HomePage ? bodyWeight : 0;
         bool detailsMusic = !HomePage && !WidgetsPage;
-        _timeline.Opacity = detailsMusic && _media.Connected && _media.Timeline?.Valid == true ? weights.Z : 0;
-        _peekButtons.Opacity = _media.Connected ? weights.Y : 0;
-        _detailsButtons.Opacity = detailsMusic && _media.Connected ? weights.Z : 0;
+        _timeline.Opacity = detailsMusic && _media.Connected && _media.Timeline?.Valid == true ? detailsTransport : 0;
+        _peekButtons.Opacity = _media.Connected ? peekTransport : 0;
+        _detailsButtons.Opacity = detailsMusic && _media.Connected ? detailsTransport : 0;
         // The protected 8-band spectrum belongs to the capsule/peek body; the redesigned
         // Details page uses the space below the artist for the fixed timeline and transport.
         _audioBars.Opacity = _preferences.AudioVisualizationEnabled ? Math.Clamp((MusicFor(WidgetForm.Capsule) ? weights.X : 0) + (_media.Connected ? weights.Y : 0), 0, 1) : 0;
@@ -977,7 +990,7 @@ public sealed partial class WidgetScene : IDisposable
         ConfigurePlacement();
         UpdateAuxiliaryPlacement();BuildControls();
     }
-    public void EndDetails(){_chrome.Close();SetCapture(PointerCaptureOwner.None,_motionNow);}
+    public void EndDetails(){_chrome.Close(retainPresentation:true);SetCapture(PointerCaptureOwner.None,_motionNow);}
     public void SetSceneVisible(bool visible,double now)
     {
         _motionNow=now;_sceneVisible=visible;
@@ -1070,9 +1083,8 @@ public sealed partial class WidgetScene : IDisposable
     void AdjustArtworkScroll(float delta)
     {
         if (delta == 0) return;
+        _artworkTransition.Translate(0, -delta, _motionNow);
         _artworkPose = _artworkPose with { Y = _artworkPose.Y - delta };
-        _artworkStart = _artworkStart with { Y = _artworkStart.Y - delta };
-        _artworkEnd = _artworkEnd with { Y = _artworkEnd.Y - delta };
         _artwork.Offset = _previousArtwork.Offset = new(_artworkPose.X, _artworkPose.Y, 0);
     }
 
@@ -1347,25 +1359,15 @@ public sealed partial class WidgetScene : IDisposable
         if(_pluginPages.Count>0){RoundRect(operations,16,height-104,32,32,16,_button);Icon(operations,"\uE8A5",24,height-96,16,_secondary);}
         if (_media.Connected)
         {
-            // The transport row hangs from the dock through the responsive geometry, so a
-            // short workspace compresses the cover/body first and never clips these buttons.
-            var transport = ResponsiveDetails();
-            if (transport is not null)
-            {
-                Transport(transport.PreviousButton.X, transport.PreviousButton.Y, transport.PreviousButton.Width,
-                    WidgetActions.Previous, _media.Capabilities.Previous);
-                Transport(transport.ToggleButton.X, transport.ToggleButton.Y, transport.ToggleButton.Width,
-                    WidgetActions.Toggle, _media.Capabilities.Toggle);
-                Transport(transport.NextButton.X, transport.NextButton.Y, transport.NextButton.Width,
-                    WidgetActions.Next, _media.Capabilities.Next);
-            }
-            else
-            {
-                float transportY = DetailsTransportY;
-                Transport(96, transportY + 6, 44, WidgetActions.Previous, _media.Capabilities.Previous);
-                Transport(152, transportY, 56, WidgetActions.Toggle, _media.Capabilities.Toggle);
-                Transport(220, transportY + 6, 44, WidgetActions.Next, _media.Capabilities.Next);
-            }
+            // Render and hit testing use one shared 44 DIP row, centered on the responsive
+            // page transport band so cover and timeline spacing remain stable.
+            var row = DetailsMediaControls(ResponsiveDetails());
+            Transport(row.Previous.X, row.Previous.Y, row.Previous.Width,
+                WidgetActions.Previous, _media.Capabilities.Previous);
+            Transport(row.Toggle.X, row.Toggle.Y, row.Toggle.Width,
+                WidgetActions.Toggle, _media.Capabilities.Toggle);
+            Transport(row.Next.X, row.Next.Y, row.Next.Width,
+                WidgetActions.Next, _media.Capabilities.Next);
         }
         else
         {
@@ -1504,12 +1506,20 @@ public sealed partial class WidgetScene : IDisposable
             if((control.Id is WidgetActions.Previous or WidgetActions.Toggle or WidgetActions.Next)
                 &&!TransportLiquidGlassHandoffFrame.CanExposeTransportControls(form,_host.IsLiquidGlassCapture,
                     OwnedGlassEnabled,_liquidGlassTransportSubmissionPending,_submittedLiquidGlassTransportFrame))return;
+            bool transport = control.Id is WidgetActions.Previous or WidgetActions.Toggle or WidgetActions.Next;
+            bool seek = control.Id == WidgetActions.Seek;
+            int index = form == WidgetForm.Peek ? 1 : 2;
+            if (transport) weight = Math.Min(weight, (float)(form == WidgetForm.Peek
+                ? _peekTransportOpacity : _detailsTransportOpacity).Sample(_motionNow).Position);
             if (weight <= .08f) return;
-            float x = control.X + (_presentedSize.X - LayoutSize(form).X) / 2;
-            float left = Math.Max(0, x), right = Math.Min(_presentedSize.X, x + control.Width);
-            float height = Math.Min(control.Height, _presentedSize.Y - control.Y);
-            if (right <= left || height <= 0) return;
-            control = control with { X = left, Width = right - left, Height = height };
+            float scale = transport || seek ? 1 : (float)_layerScale[index].Sample(_motionNow).Position;
+            float shift = seek ? 0 : (float)_layerShift[index].Sample(_motionNow).Position;
+            float x = (control.X - LayoutSize(form).X / 2) * scale + _presentedSize.X / 2;
+            float y = control.Y * scale + shift;
+            float left = Math.Max(0, x), right = Math.Min(_presentedSize.X, x + control.Width * scale);
+            float top = Math.Max(0, y), bottom = Math.Min(_presentedSize.Y, y + control.Height * scale);
+            if (right <= left || bottom <= top) return;
+            control = control with { X = left, Y = top, Width = right - left, Height = bottom - top };
             if (!candidates.TryGetValue(control.Id, out var prior) || weight > prior.Weight)
                 candidates[control.Id] = (weight, form, control);
         }
@@ -1536,15 +1546,13 @@ public sealed partial class WidgetScene : IDisposable
             if (_media.Connected)
             {
                 var layout = form == WidgetForm.Details ? ResponsiveDetails() : null;
-                Add(new(WidgetActions.Previous, "上一首",
-                    layout?.PreviousButton.X ?? 96, layout?.PreviousButton.Y ?? DetailsTransportY + 6,
-                    layout?.PreviousButton.Width ?? 44, 44, _media.Capabilities.Previous));
+                var row = DetailsMediaControls(layout);
+                Add(new(WidgetActions.Previous, "上一首", row.Previous.X, row.Previous.Y,
+                    row.Previous.Width, row.Previous.Height, _media.Capabilities.Previous));
                 Add(new(WidgetActions.Toggle, _media.State == PlaybackState.Playing ? "暂停" : "播放",
-                    layout?.ToggleButton.X ?? 152, layout?.ToggleButton.Y ?? DetailsTransportY,
-                    layout?.ToggleButton.Width ?? 56, layout?.ToggleButton.Height ?? 56, _media.Capabilities.Toggle));
-                Add(new(WidgetActions.Next, "下一首",
-                    layout?.NextButton.X ?? 220, layout?.NextButton.Y ?? DetailsTransportY + 6,
-                    layout?.NextButton.Width ?? 44, 44, _media.Capabilities.Next));
+                    row.Toggle.X, row.Toggle.Y, row.Toggle.Width, row.Toggle.Height, _media.Capabilities.Toggle));
+                Add(new(WidgetActions.Next, "下一首", row.Next.X, row.Next.Y,
+                    row.Next.Width, row.Next.Height, _media.Capabilities.Next));
                 bool valid = _media.Timeline?.Valid == true;
                 var time = _media.Timeline;
                 double value = valid ? Math.Clamp(((_seekPreview ?? PositionAt(_media, Stopwatch.GetTimestamp())) - time!.Start).TotalSeconds / (time.End - time.Start).TotalSeconds * 100, 0, 100) : 0;
@@ -1567,15 +1575,17 @@ public sealed partial class WidgetScene : IDisposable
         }
         if(_form==WidgetForm.Details)
         {
-            if (HomePage) AddHomeControls(controls);
+            if (HomePage && _detailsBodyOpacity.Sample(_motionNow).Position > .08) AddHomeControls(controls, _media);
             else if(WidgetsPage && _boardRender is not null)
                 foreach(var item in _boardRender.Controls)
                 {
                     float shift=(_presentedSize.X-_detailsWidth)/2;
                     controls.Add(item with {X=item.X+shift});_controlForms[item.Id]=WidgetForm.Details;
                 }
-            if (!HomePage) controls.Add(new AccessibleControl(WidgetActions.HomeBack, "返回首页", 12, 6, 44, 44));
-            controls.AddRange(_chrome.GetAccessibleControls());
+            if (_contentWeights.Z > .08f) {
+                if (!HomePage) controls.Add(new AccessibleControl(WidgetActions.HomeBack, "返回首页", 12, 6, 44, 44));
+                controls.AddRange(_chrome.GetAccessibleControls());
+            }
         }
         string rootName = _form == WidgetForm.Details && HomePage ? "GlassDesk，首页" : _form == WidgetForm.Details && WidgetsPage ? "GlassDesk，小组件" : MusicFor(_form) ? $"GlassDesk，{Title}，{Artist}，{PlaybackLabel}" : $"GlassDesk，本地时间 {_now:HH:mm}";
         if (_lastRootName != rootName || !_controls.SequenceEqual(controls))
@@ -1589,6 +1599,15 @@ public sealed partial class WidgetScene : IDisposable
     string Title => string.IsNullOrWhiteSpace(_media.Title) ? "歌曲信息暂不可用" : _media.Title;
     // Fixed transport row for the 476 DIP music page (previous/next 44, toggle 56).
     float DetailsTransportY => 340;
+    MediaControlsRow DetailsMediaControls(DetailsResponsiveResult? geometry)
+    {
+        var size = LayoutSize(WidgetForm.Details);
+        float centerX = geometry is null ? size.X / 2
+            : geometry.ToggleButton.X + geometry.ToggleButton.Width / 2;
+        float centerY = geometry is null ? DetailsTransportY + 28
+            : geometry.ToggleButton.Y + geometry.ToggleButton.Height / 2;
+        return MediaControlsRowLayout.Resolve(centerX, centerY, 44, 26);
+    }
     string ClockPrimary => _preferences.ClockShowTime ? _now.ToString("HH:mm", CultureInfo.InvariantCulture)
         : _preferences.ClockShowDate ? _now.ToString("M月d日", CultureInfo.CurrentCulture)
         : _preferences.ClockShowWeekday ? _now.ToString("dddd", CultureInfo.CurrentCulture) : string.Empty;
@@ -1839,7 +1858,7 @@ public sealed partial class WidgetScene : IDisposable
         _audioClip.Dispose(); _audioBars.Dispose(); _companion.Dispose(); _peekCompanion.Dispose(); _chrome.Dispose();
         _contentBrush.Dispose(); _capsuleBrush.Dispose(); _peekBrush.Dispose(); _artworkBrush.Dispose(); _previousArtworkBrush.Dispose();
         _timelineBrush.Dispose(); _feedbackBrush.Dispose(); _detailsBrush.Dispose();
-        _bodyRoot.Clip?.Dispose(); _bodyClip.Dispose(); _bodyRoot.Dispose(); _root.Dispose();
+        _bodyRoot.Clip?.Dispose(); _bodyRoot.Dispose(); _root.Dispose();
     }
 
     sealed record ContentKey(WidgetForm Form, string Session, long Version, bool Connected, string Title, string Artist,
@@ -1852,7 +1871,9 @@ public sealed partial class WidgetScene : IDisposable
     sealed class TransportVisual : IDisposable
     {
         public SpriteVisual Visual { get; }
+        public bool MotionActive => _spring.Active || _plate.MotionActive;
         readonly Compositor _compositor;
+        readonly CompositionSpring _spring;
         readonly CompositionSurfaceBrush _brush;
         readonly ControlDepthVisual _plate;
         readonly SkipGlyphVisual? _skipGlyph;
@@ -1866,11 +1887,11 @@ public sealed partial class WidgetScene : IDisposable
         bool _ownedGlass;
         readonly bool _systemGlass;
         byte _shade;
-        double _pressedAt, _releasedAt;
+        double _releasedAt;
         static double Now => Stopwatch.GetTimestamp() * 1000d / Stopwatch.Frequency;
         public TransportVisual(NativeWidgetHost host, bool toggle)
         {
-            _compositor = host.Compositor;_systemGlass=host.IsLiquidGlassCapture;
+            _compositor = host.Compositor; _spring = new(_compositor); _systemGlass=host.IsLiquidGlassCapture;
             Visual = _compositor.CreateSpriteVisual();
             _brush = _compositor.CreateSurfaceBrush();
             _brush.Stretch = CompositionStretch.Fill;
@@ -1904,7 +1925,7 @@ public sealed partial class WidgetScene : IDisposable
             _plate.SetOpticalGlass(value&&_systemGlass);_plate.Visual.IsVisible=!value;_hover.IsVisible=!value;
             _skipGlyph?.SetOpticalGlass(value&&_systemGlass);_playbackGlyph?.SetOpticalGlass(value&&_systemGlass);
             if(value&&_systemGlass){float size=Visual.Size.X;_plate.SetBounds(1,1,size-2,size-2,(size-2)/2);}
-            Visual.StopAnimation("Scale");Visual.Scale=Vector3.One;
+            _spring.Dispose(); Visual.StopAnimation("Scale");Visual.Scale=Vector3.One;
         }
         public void Replace(CompositionDrawingSurface replacement) => ReplaceSurface(ref _surface, _brush, replacement);
         public void UpdateSkipGlyph(bool next, uint color, float buttonSize, float iconSize)
@@ -1913,7 +1934,7 @@ public sealed partial class WidgetScene : IDisposable
             => _playbackGlyph!.Update(playing, color, buttonSize, iconSize, reducedMotion);
         public void SetFeedback(bool hovered, bool pressed, bool reducedMotion)
         {
-            if(_ownedGlass){_hovered=hovered;_pressed=pressed;return;}
+            if(_ownedGlass&&!_systemGlass){_hovered=hovered;_pressed=pressed;return;}
             _hovered = hovered;_plate.SetFeedback(hovered,pressed,reducedMotion);
             byte shade = pressed ? (byte)0x26 : hovered ? (byte)0x10 : (byte)0;
             if (reducedMotion)
@@ -1929,39 +1950,17 @@ public sealed partial class WidgetScene : IDisposable
                 _hoverInk.StartAnimation("Color", tint);
             }
             _shade = shade;
-            if (_pressed == pressed) return;
+            if (_pressed && !pressed) _releasedAt = Now;
             _pressed = pressed;
-            double now = Now;
-            if (pressed) _pressedAt = now; else _releasedAt = now;
-            if (reducedMotion) return;
-            using var easing = _compositor.CreateCubicBezierEasingFunction(new(.2f, 1), new(.35f, 1));
-            using var animation = _compositor.CreateVector3KeyFrameAnimation();
-            animation.InsertExpressionKeyFrame(0, "this.StartingValue");
-            if (pressed)
-            {
-                animation.InsertKeyFrame(1, new Vector3(.94f, .94f, 1), easing);
-                animation.Duration = TimeSpan.FromMilliseconds(65);
-            }
-            else
-            {
-                // A quick release still reaches the pressed pose before settling.
-                double remaining = Math.Max(0, 90 - (now - _pressedAt));
-                double duration = remaining + 180;
-                if (remaining > 0) animation.InsertKeyFrame((float)(remaining / duration), new Vector3(.94f, .94f, 1), easing);
-                animation.InsertKeyFrame(1, Vector3.One, easing); animation.Duration = TimeSpan.FromMilliseconds(duration);
-            }
-            Visual.StartAnimation("Scale", animation);
+            float target = reducedMotion ? 1 : pressed ? .94f : hovered ? 1.018f : 1;
+            _spring.Scale(Visual, new(target, target, 1), reducedMotion, pressed ? 140 : 280);
         }
         public void Activate(bool reducedMotion)
         {
-            if(_ownedGlass)return;
+            if(_ownedGlass&&!_systemGlass)return;
             if (reducedMotion || _pressed || Now - _releasedAt < 120) return;
-            using var easing = _compositor.CreateCubicBezierEasingFunction(new(.2f, 1), new(.35f, 1));
-            using var animation = _compositor.CreateVector3KeyFrameAnimation();
-            animation.InsertExpressionKeyFrame(0, "this.StartingValue");
-            animation.InsertKeyFrame(.3f, new Vector3(.94f, .94f, 1), easing);
-            animation.InsertKeyFrame(1, Vector3.One, easing); animation.Duration = TimeSpan.FromMilliseconds(260);
-            Visual.StartAnimation("Scale", animation);
+            float target = _hovered ? 1.018f : 1;
+            _spring.PulseScale(Visual, new(target, target, 1), reducedMotion);
             using var tint = _compositor.CreateColorKeyFrameAnimation();
             tint.InsertExpressionKeyFrame(0, "this.StartingValue");
             tint.InsertKeyFrame(.3f, Color.FromArgb(0x26, 48, 58, 69));
@@ -1970,6 +1969,7 @@ public sealed partial class WidgetScene : IDisposable
         }
         public void Dispose()
         {
+            _spring.Dispose();
             _brush.Surface = null;
             _surface?.Dispose();
             Visual.StopAnimation("Scale"); _hoverInk.StopAnimation("Color");

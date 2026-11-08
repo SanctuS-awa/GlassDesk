@@ -216,26 +216,26 @@ try
             simulatedExplicitCandidate with { IndependentGraphicsMachine = "OTHER-TEST" },
             simulatedIndependentMachine),
         "candidate launch is denied when its declared machine does not match the host");
-    Check(!DesktopMaterialLaunch.AllowedForMachine(simulatedExplicitCandidate, "SHENG-AWA"),
+    Check(!DesktopMaterialLaunch.AllowedForMachine(simulatedExplicitCandidate, "sheng"),
         "incident host remains denied even with an explicit isolated directory");
     var selfIdentifiedCandidate = simulatedExplicitCandidate with
     {
         IndependentGraphicsMachine = Environment.MachineName
     };
     Check(DesktopMaterialLaunch.AllowedOnThisMachine(selfIdentifiedCandidate)
-        == !string.Equals(Environment.MachineName, "SHENG-AWA", StringComparison.OrdinalIgnoreCase),
-        "actual current-host check honors the SHENG-AWA hard block");
+        == !string.Equals(Environment.MachineName, "sheng", StringComparison.OrdinalIgnoreCase),
+        "actual current-host check honors the sheng hard block");
     Check(DesktopMaterialLaunch.FusePath(parsedCandidate)
         == Path.Combine(Path.GetFullPath(appData), "desktop-material-20261024-v1.json"),
         "launch helper binds the fuse file to this candidate build tag and preview data directory");
-    var blockedMachineCandidate = parsedCandidate with { IndependentGraphicsMachine = "SHENG-AWA" };
+    var blockedMachineCandidate = parsedCandidate with { IndependentGraphicsMachine = "sheng" };
     Check(!DesktopMaterialLaunch.AllowedOnThisMachine(blockedMachineCandidate)
         && Throws<InvalidOperationException>(() => DesktopMaterialLaunch.Validate(blockedMachineCandidate))
         && Throws<InvalidOperationException>(() => DesktopMaterialLaunch.CreateSession(blockedMachineCandidate)),
-        "SHENG-AWA denies candidate launch before host construction");
+        "sheng denies candidate launch before host construction");
     var parsedArm = LaunchOptions.Parse([
         "--ui-preview", "--data-dir=" + appData,
-        "--independent-graphics-machine=SHENG-AWA",
+        "--independent-graphics-machine=sheng",
         "--arm-owned-image-glass"]);
     Check(parsedArm.ArmOwnedImageGlass && !parsedArm.OwnedImageGlass
         && Throws<InvalidOperationException>(() => DesktopMaterialLaunch.Validate(parsedArm)),
@@ -251,17 +251,17 @@ try
     var parsedSystemCandidate = LaunchOptions.Parse([
         "--ui-preview", "--data-dir=" + appData,
         "--qa-report=" + Path.Combine(appData, "incident-qa.json"), "--qa-cycles=4",
-        "--independent-graphics-machine=SHENG-AWA",
+        "--independent-graphics-machine=sheng",
         "--authorized-incident-host-short-test", "--system-compositor-glass"]);
     Check(parsedSystemCandidate.LiquidGlassCaptureGlass && parsedSystemCandidate.IncidentHostShortTest
         && parsedSystemCandidate.QaCycles == 4 && parsedSystemCandidate.ExplicitDataDirectory,
         "system-compositor CLI flag preserves the incident short-test requirements");
-    Check(DesktopMaterialLaunch.AllowedForMachine(parsedSystemCandidate, "SHENG-AWA")
+    Check(DesktopMaterialLaunch.AllowedForMachine(parsedSystemCandidate, "sheng")
         && !DesktopMaterialLaunch.AllowedForMachine(parsedSystemCandidate, simulatedIndependentMachine),
         "system-compositor launch is restricted to the explicitly authorized incident host");
     var parsedSystemWithoutShortTest = LaunchOptions.Parse([
         "--ui-preview", "--data-dir=" + appData,
-        "--independent-graphics-machine=SHENG-AWA", "--system-compositor-glass"]);
+        "--independent-graphics-machine=sheng", "--system-compositor-glass"]);
     Check(Throws<InvalidOperationException>(() => DesktopMaterialLaunch.Validate(parsedSystemWithoutShortTest)),
         "system-compositor flag without the authorized short-test token is rejected before host creation");
     Check(Throws<InvalidOperationException>(() => DesktopMaterialLaunch.CreateSession(parsedSystemCandidate)),
@@ -270,17 +270,17 @@ try
     string systemPreviewData=Path.Combine(root,"system-compositor-preview-data");
     var parsedSystemPreview=LaunchOptions.Parse([
         "--ui-preview","--data-dir="+systemPreviewData,
-        "--independent-graphics-machine=SHENG-AWA","--system-compositor-preview"]);
+        "--independent-graphics-machine=sheng","--system-compositor-preview"]);
     Check(parsedSystemPreview.LiquidGlassCapturePreview&&!parsedSystemPreview.LiquidGlassCaptureGlass
         &&parsedSystemPreview.ExplicitDataDirectory&&parsedSystemPreview.QaCycles==0,
         "persistent-preview CLI selects a separate mode with an explicit isolated data directory");
-    Check(DesktopMaterialLaunch.AllowedForMachine(parsedSystemPreview,"SHENG-AWA")==LaunchOptions.LiquidGlassCapturePreviewBuild
+    Check(DesktopMaterialLaunch.AllowedForMachine(parsedSystemPreview,"sheng")==LaunchOptions.LiquidGlassCapturePreviewBuild
         &&!DesktopMaterialLaunch.AllowedForMachine(parsedSystemPreview,simulatedIndependentMachine),
-        "persistent preview is available only in its opted-in build on SHENG-AWA");
+        "persistent preview is available only in its opted-in build on sheng");
     var parsedPreviewArm=LaunchOptions.Parse([
         "--ui-preview","--data-dir="+systemPreviewData,
-        "--independent-graphics-machine=SHENG-AWA","--arm-system-compositor-preview"]);
-    bool currentHostIsPreviewTarget=string.Equals(Environment.MachineName,"SHENG-AWA",StringComparison.OrdinalIgnoreCase);
+        "--independent-graphics-machine=sheng","--arm-system-compositor-preview"]);
+    bool currentHostIsPreviewTarget=string.Equals(Environment.MachineName,"sheng",StringComparison.OrdinalIgnoreCase);
     if(LaunchOptions.LiquidGlassCapturePreviewBuild&&currentHostIsPreviewTarget)
     {
         DesktopMaterialLaunch.Validate(parsedSystemPreview);
@@ -300,25 +300,25 @@ try
         Check(Throws<InvalidOperationException>(()=>DesktopMaterialLaunch.Validate(parsedSystemPreview)),
             "persistent preview launch validation denies an unguarded build or non-target machine");
     var previewWithoutData=LaunchOptions.Parse([
-        "--ui-preview","--independent-graphics-machine=SHENG-AWA","--system-compositor-preview"]);
+        "--ui-preview","--independent-graphics-machine=sheng","--system-compositor-preview"]);
     var previewWithoutUi=LaunchOptions.Parse([
-        "--data-dir="+systemPreviewData,"--independent-graphics-machine=SHENG-AWA","--system-compositor-preview"])
+        "--data-dir="+systemPreviewData,"--independent-graphics-machine=sheng","--system-compositor-preview"])
         with {UiPreview=false};
     Check(Throws<InvalidOperationException>(()=>DesktopMaterialLaunch.Validate(previewWithoutData))
         &&Throws<InvalidOperationException>(()=>DesktopMaterialLaunch.Validate(previewWithoutUi)),
         "persistent preview rejects implicit data and normal-app launch modes");
     var previewWithShortTest=LaunchOptions.Parse([
         "--ui-preview","--data-dir="+systemPreviewData,
-        "--independent-graphics-machine=SHENG-AWA","--authorized-incident-host-short-test","--system-compositor-preview"]);
+        "--independent-graphics-machine=sheng","--authorized-incident-host-short-test","--system-compositor-preview"]);
     Check(Throws<InvalidOperationException>(()=>DesktopMaterialLaunch.Validate(previewWithShortTest)),
         "persistent preview cannot opt into the bounded short-test ABI or deadline");
     var previewArmAndRun=LaunchOptions.Parse([
         "--ui-preview","--data-dir="+systemPreviewData,
-        "--independent-graphics-machine=SHENG-AWA","--arm-system-compositor-preview","--system-compositor-preview"]);
+        "--independent-graphics-machine=sheng","--arm-system-compositor-preview","--system-compositor-preview"]);
     Check(Throws<InvalidOperationException>(()=>DesktopMaterialLaunch.Validate(previewArmAndRun)),
         "persistent-preview fuse arm and run are separate explicit launches");
     Check(parsedPreviewArm.ArmLiquidGlassCapturePreview&&!parsedPreviewArm.LiquidGlassCapturePreview
-        &&DesktopMaterialLaunch.AllowedForMachine(parsedPreviewArm,"SHENG-AWA")==LaunchOptions.LiquidGlassCapturePreviewBuild,
+        &&DesktopMaterialLaunch.AllowedForMachine(parsedPreviewArm,"sheng")==LaunchOptions.LiquidGlassCapturePreviewBuild,
         "preview arm action uses the same build, host, and isolated-directory gate");
     var systemPreviewFuse=new DesktopMaterialExperimentFuse(Path.Combine(root,"system-preview-fuse.json"));
     Check(systemPreviewFuse.ArmNextStart()==DesktopMaterialFuseResult.Armed,
@@ -346,7 +346,7 @@ try
         &&systemPreviewFuse.ArmNextStart()==DesktopMaterialFuseResult.Unavailable,
         "a preview fault stays tripped and clean-exit or rearm cannot clear it");
     Check(LaunchOptions.LiquidGlassCapturePreviewBuild
-        ||!DesktopMaterialLaunch.AllowedForMachine(parsedSystemPreview,"SHENG-AWA"),
+        ||!DesktopMaterialLaunch.AllowedForMachine(parsedSystemPreview,"sheng"),
         "persistent preview cannot bypass the build guard at runtime");
 
     var normalAppOptions = LaunchOptions.Parse(["--data-dir=" + appData]);

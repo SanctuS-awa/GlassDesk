@@ -21,6 +21,7 @@
 #include <winrt/Windows.Graphics.DirectX.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Composition.Desktop.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -32,6 +33,7 @@
 #include <iterator>
 #include <utility>
 #include <cstdint>
+#include <cstring>
 #include "NativeApi.h"
 #include "PointerSurfaceGate.h"
 #include "Accessibility.h"
@@ -45,6 +47,7 @@
 #include "DesktopSourceViewport.h"
 #include "ArtworkFailurePolicy.h"
 #include "ShadowRasterProfile.h"
+#include "LiquidGlassDiagnostics.h"
 
 using namespace winrt;
 using namespace winrt::Windows::Foundation;
@@ -76,27 +79,6 @@ HRESULT WindowCallResult(BOOL succeeded) noexcept
     return error?HRESULT_FROM_WIN32(error):E_FAIL;
 }
 
-void LogLiquidCaptureFailure(HRESULT failure) noexcept
-{
-    SYSTEMTIME now{};GetLocalTime(&now);
-    wchar_t line[192]{};
-    const int length=swprintf_s(line,std::size(line),L"%04u-%02u-%02u %02u:%02u:%02u liquid-glass capture failed: 0x%08X\r\n",
-        now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,static_cast<unsigned>(failure));
-    if(length<=0)return;OutputDebugStringW(line);
-    wchar_t localAppData[MAX_PATH]{};
-    const DWORD localLength=GetEnvironmentVariableW(L"LOCALAPPDATA",localAppData,static_cast<DWORD>(std::size(localAppData)));
-    if(localLength==0||localLength>=std::size(localAppData))return;
-    wchar_t appDirectory[MAX_PATH]{},logDirectory[MAX_PATH]{},logPath[MAX_PATH]{};
-    if(swprintf_s(appDirectory,std::size(appDirectory),L"%s\\GlassDesk",localAppData)<0||
-       swprintf_s(logDirectory,std::size(logDirectory),L"%s\\logs",appDirectory)<0||
-       swprintf_s(logPath,std::size(logPath),L"%s\\liquid-glass.log",logDirectory)<0)return;
-    CreateDirectoryW(appDirectory,nullptr);CreateDirectoryW(logDirectory,nullptr);
-    HANDLE file=CreateFileW(logPath,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE)return;
-    DWORD written{};WriteFile(file,line,static_cast<DWORD>(length*sizeof(wchar_t)),&written,nullptr);CloseHandle(file);
-}
-
-
 HRESULT PhysicalFrameSize(GDFrame const& frame,unsigned dpi,bool legacyFlag,int& width,int& height) noexcept
 {
     width=height=0;
@@ -123,6 +105,12 @@ bool ValidFrameRequest(GDFrame const& frame,float tension) noexcept
         std::isfinite(frame.blur)&&std::isfinite(frame.tint)&&frame.width>=1&&frame.height>=1&&
         frame.width<=4096&&frame.height<=4096&&frame.radius>=0&&frame.blur>=0&&frame.blur<=100;
 }
+
+struct FramePixelGeometry
+{
+    int allocationWidth{},allocationHeight{};
+    float shapeWidth{},shapeHeight{};
+};
 
 struct MaterialEffect : implements<MaterialEffect,IGraphicsEffect,IGraphicsEffectSource,EffectInterop>
 {
@@ -237,6 +225,8 @@ struct Host : std::enable_shared_from_this<Host>
     GDCallback callback{};void* user{};
     GDFrame frame{232,48,24,20,.24f,0};
     unsigned dpi{96}; bool visible{},tracking{},captured{},destroying{},fallback{},restoringTopmost{};
+    bool deferFrameSurfaceUpdates{},captureMotionActive{};
+    float presentationOffsetX{},presentationOffsetY{},cachedShapeWidth{-1},cachedShapeHeight{-1};
     int cachedWidth{},cachedHeight{};float cachedRadius{-1},surfaceTension{},cachedTension{-2};unsigned cachedDpi{};
     winrt::Windows::System::DispatcherQueueController queue{nullptr};
     Compositor compositor{nullptr}; DesktopWindowTarget target{nullptr},glassTarget{nullptr};
@@ -264,7 +254,22 @@ struct Host : std::enable_shared_from_this<Host>
     std::unique_ptr<typography::Engine> typographyEngine;
     bool liquidEnabled{},liquidReady{},liquidPresented{};
     bool liquidCaptureCandidate{},liquidCapturePresented{},liquidCaptureFuseTripped{};
+    ULONGLONG lastGeometryFailureLogMs{};
+    wchar_t const* lastGeometryFailureLogStage{L""};
+    HRESULT lastGeometryFailureLogCode{S_OK};
+    ULONGLONG liquidCaptureRetryStartedMs{};
+    UINT liquidCaptureRetryDelayMs{16};
+    bool liquidCaptureGeometryRetrying{},liquidCaptureSurfaceRetrying{};
     HRESULT liquidCaptureFailure{S_OK};
+    GDLiquidGlassSettings liquidSettings{sizeof(GDLiquidGlassSettings),1};
+    std::vector<GDGlassShapeV1> glassSceneShapes;
+    uint64_t glassSceneSequence{};
+    uint64_t appliedGlassSceneSequence{};
+    uint32_t renderOpIndex{std::numeric_limits<uint32_t>::max()};
+    ULONGLONG lastRenderErrorLogMs{};
+    HRESULT lastRenderErrorLogHr{S_OK};
+    uint32_t lastRenderErrorLogIndex{std::numeric_limits<uint32_t>::max()};
+    wchar_t const* lastRenderErrorLogStage{L""};
     bool opticalReady{};
     CompositionSurfaceBrush opticalBrush{nullptr};CompositionDrawingSurface opticalSurface{nullptr};
     std::unique_ptr<LiquidGlass> liquid;
@@ -280,12 +285,33 @@ struct Host : std::enable_shared_from_this<Host>
     CompositionSurfaceBrush liquidBrush{nullptr};CompositionDrawingSurface liquidSurface{nullptr};
     winrt::Windows::UI::Composition::ICompositionSurface liquidCaptureSurface{nullptr},liquidRefractionSurface{nullptr},liquidTintSurface{nullptr},liquidInkSurface{nullptr};
     CompositionSurfaceBrush liquidCaptureBrush{nullptr},liquidRefractionBrush{nullptr},liquidTintCaptureBrush{nullptr};
+    struct FallbackLayer
+    {
+        uint32_t id{};
+        SpriteVisual body{nullptr};
+        CompositionRoundedRectangleGeometry clipShape{nullptr};
+        SpriteVisual veil{nullptr};
+        CompositionColorBrush veilBrush{nullptr};
+        ShapeVisual rim{nullptr};
+        CompositionRoundedRectangleGeometry rimShape{nullptr};
+        CompositionSpriteShape rimSprite{nullptr};
+    };
+    ContainerVisual fallbackLayers{nullptr};
+    CompositionEffectBrush fallbackBlurL2{nullptr},fallbackBlurL3{nullptr};
+    CompositionLinearGradientBrush fallbackRimBrush{nullptr};
+    std::vector<FallbackLayer> fallbackLayerPool;
+    uint64_t fallbackKey{~0ull};
+    mutable bool fallbackDarkCached{};
+    mutable ULONGLONG fallbackDarkCheckedMs{std::numeric_limits<ULONGLONG>::max()};
     void* attachedLiquidSwapChain{};void* attachedLiquidRefractionSwapChain{};void* attachedLiquidTintSwapChain{};void* attachedLiquidInkSwapChain{};
     uint64_t liquidInkSurfaceGeneration{};
     std::unique_ptr<liquidglass::LiquidGlassCapture> liquidCapture;
     std::list<ImageEntry> images;
     HDC shadowDc{};HBITMAP shadowBitmap{},shadowRetiredBitmap{};void* shadowBits{};
     int shadowWidth{},shadowHeight{};float shadowRadius{-1},shadowTension{-2};unsigned shadowDpi{};
+    float shadowMaterialScale{-1},shadowThemeWeight{-1};
+    float shadowShapeWidth{-1},shadowShapeHeight{-1},shadowOffsetX{-1},shadowOffsetY{-1};
+    bool shadowGlassCss{};
     unsigned shadowCapacityWidth{},shadowCapacityHeight{};bool shadowOpticalProfile{};
     int shadowX{std::numeric_limits<int>::min()},shadowY{std::numeric_limits<int>::min()};bool shadowShown{};
     std::shared_ptr<AccessibleState> accessibility=std::make_shared<AccessibleState>();
@@ -293,6 +319,30 @@ struct Host : std::enable_shared_from_this<Host>
 
     ~Host(){Shutdown();}
     float Scale()const{return dpi/96.0f;}
+    HRESULT ComputeFramePixelGeometry(GDFrame const& value,unsigned targetDpi,float offsetX,float offsetY,
+        FramePixelGeometry& geometry)const noexcept
+    {
+        geometry={};
+        if(!liquidCaptureCandidate)
+        {
+            const HRESULT hr=PhysicalFrameSize(value,targetDpi,false,geometry.allocationWidth,geometry.allocationHeight);
+            if(FAILED(hr))return hr;
+            geometry.shapeWidth=float(geometry.allocationWidth);geometry.shapeHeight=float(geometry.allocationHeight);
+            return S_OK;
+        }
+        const float scale=static_cast<float>(targetDpi)/96.0f;
+        if(!std::isfinite(scale)||scale<=0.0f||!std::isfinite(offsetX)||!std::isfinite(offsetY)||
+            offsetX<0.0f||offsetX>=1.0f||offsetY<0.0f||offsetY>=1.0f)return E_INVALIDARG;
+        // Round the same float geometry consumed by Composition and HLSL.
+        const float shapeWidth=value.width*scale,shapeHeight=value.height*scale;
+        const double allocationWidth=std::ceil(double(shapeWidth)+offsetX),allocationHeight=std::ceil(double(shapeHeight)+offsetY);
+        if(!std::isfinite(shapeWidth)||!std::isfinite(shapeHeight)||!std::isfinite(allocationWidth)||!std::isfinite(allocationHeight)||
+            shapeWidth<0.5||shapeHeight<0.5||allocationWidth<1||allocationHeight<1||
+            allocationWidth>std::numeric_limits<int>::max()||allocationHeight>std::numeric_limits<int>::max())return E_BOUNDS;
+        geometry.allocationWidth=static_cast<int>(allocationWidth);geometry.allocationHeight=static_cast<int>(allocationHeight);
+        geometry.shapeWidth=static_cast<float>(shapeWidth);geometry.shapeHeight=static_cast<float>(shapeHeight);
+        return S_OK;
+    }
     void EnsureTopmost()
     {
         if(destroying||restoringTopmost||!visible||!IsWindowVisible(window))return;
@@ -313,14 +363,24 @@ struct Host : std::enable_shared_from_this<Host>
         if(!desktopviewport::ClampDesktopPlacement(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),
             GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN),width,height,x,y))return E_INVALIDARG;
         flags|=SWP_NOACTIVATE|SWP_NOZORDER;
-        if(!glassWindow)return WindowCallResult(SetWindowPos(window,nullptr,x,y,width,height,flags));
+        if(!glassWindow){
+            const bool previous=deferFrameSurfaceUpdates;
+            deferFrameSurfaceUpdates=true;
+            const BOOL result=SetWindowPos(window,nullptr,x,y,width,height,flags);
+            deferFrameSurfaceUpdates=previous;
+            return WindowCallResult(result);
+        }
         HDWP batch=BeginDeferWindowPos(2);
         if(!batch)return HRESULT_FROM_WIN32(GetLastError());
         batch=DeferWindowPos(batch,glassWindow,nullptr,x,y,width,height,flags);
         if(!batch)return HRESULT_FROM_WIN32(GetLastError());
         batch=DeferWindowPos(batch,window,nullptr,x,y,width,height,flags);
         if(!batch)return HRESULT_FROM_WIN32(GetLastError());
-        return WindowCallResult(EndDeferWindowPos(batch));
+        const bool previous=deferFrameSurfaceUpdates;
+        deferFrameSurfaceUpdates=true;
+        const BOOL result=EndDeferWindowPos(batch);
+        deferFrameSurfaceUpdates=previous;
+        return WindowCallResult(result);
     }
     void SyncGlassWindowBounds() noexcept
     {
@@ -352,7 +412,8 @@ struct Host : std::enable_shared_from_this<Host>
     void EmitPointer(int kind,LPARAM point,bool inside,double value=0)
     {
         POINT screen{GET_X_LPARAM(point),GET_Y_LPARAM(point)};ClientToScreen(window,&screen);
-        auto x=GET_X_LPARAM(point)/Scale(),y=GET_Y_LPARAM(point)/Scale();
+        auto x=(static_cast<float>(GET_X_LPARAM(point))-presentationOffsetX)/Scale();
+        auto y=(static_cast<float>(GET_Y_LPARAM(point))-presentationOffsetY)/Scale();
         const int control=inside?Hit(x,y):0;
         Emit(kind,x,y,screen.x,screen.y,input::ControlIdForSurface(inside,control),value);
     }
@@ -376,7 +437,7 @@ struct Host : std::enable_shared_from_this<Host>
     {
         RECT rectangle{};GetWindowRect(window,&rectangle);
         std::lock_guard lock(accessibility->mutex);
-        accessibility->rectangle=rectangle;accessibility->dpi=dpi;accessibility->visible=visible;
+        accessibility->rectangle=rectangle;accessibility->offsetX=presentationOffsetX;accessibility->offsetY=presentationOffsetY;accessibility->dpi=dpi;accessibility->visible=visible;
         accessibility->surfaceShape={frame.width,frame.height,frame.radius,EffectiveTension()};
     }
     unsigned CurrentMonitorDpi()const
@@ -393,19 +454,22 @@ struct Host : std::enable_shared_from_this<Host>
     {
         if(ownedFaulted&&(materialBackend==2))return;
         const unsigned nextDpi=value?value:96;
-        dpi=nextDpi;
-        int width{},height{};
-        check_hresult(PhysicalFrameSize(frame,dpi,false,width,height));
-        check_hresult(PositionHostWindows(x,y,width,height,SWP_NOACTIVATE));
+        FramePixelGeometry geometry{};
+        check_hresult(ComputeFramePixelGeometry(frame,nextDpi,presentationOffsetX,presentationOffsetY,geometry));
+        const unsigned previousDpi=dpi;dpi=nextDpi;
+        const HRESULT positioned=PositionHostWindows(x,y,geometry.allocationWidth,geometry.allocationHeight,SWP_NOACTIVATE);
+        if(FAILED(positioned)){dpi=previousDpi;check_hresult(positioned);}
         if(ownedFaulted&&(materialBackend==2))return;
         Layout();UpdateAccessibleGeometry();Emit(9);
     }
     void ReconcileDpi()
     {
         auto value=CurrentMonitorDpi();RECT rectangle{};GetWindowRect(window,&rectangle);
+        FramePixelGeometry expected{};
+        if(FAILED(ComputeFramePixelGeometry(frame,value,presentationOffsetX,presentationOffsetY,expected)))return;
         // The resident GetDpiForWindow can lag a display-settings broadcast.
         // Keep the presented DIP frame (including an interrupted animation).
-        if(value!=dpi||rectangle.right-rectangle.left!=int(std::lround(frame.width*value/96))||rectangle.bottom-rectangle.top!=int(std::lround(frame.height*value/96)))
+        if(value!=dpi||rectangle.right-rectangle.left!=expected.allocationWidth||rectangle.bottom-rectangle.top!=expected.allocationHeight)
             ApplyDpi(value,rectangle.left,rectangle.top);
     }
     void CreateGraphics()
@@ -529,6 +593,30 @@ struct Host : std::enable_shared_from_this<Host>
         tintBrush.ColorStops().Append(compositor.CreateColorGradientStop(1,{0,246,248,250}));
         solidTintBrush=compositor.CreateColorBrush();solidBorderBrush=compositor.CreateColorBrush();
         tint=compositor.CreateSpriteVisual();tint.Brush(tintBrush);glassRoot.Children().InsertAtTop(tint);
+        if(materialBackend==1)
+        {
+            fallbackLayers=compositor.CreateContainerVisual();
+            fallbackLayers.RelativeSizeAdjustment(winrt::Windows::Foundation::Numerics::float2{1,1});
+            fallbackLayers.IsVisible(false);
+            glassRoot.Children().InsertAtTop(fallbackLayers);
+            auto makeBlur=[&](wchar_t const* name)
+            {
+                auto effect=make_self<MaterialEffect>();effect->name=name;
+                effect->source=CompositionEffectSourceParameter(L"Backdrop");
+                auto brush=compositor.CreateEffectFactory(effect.as<IGraphicsEffect>(),
+                    {hstring(name)+L".BlurAmount"}).CreateBrush();
+                brush.SetSourceParameter(L"Backdrop",compositor.CreateHostBackdropBrush());
+                return brush;
+            };
+            fallbackBlurL2=makeBlur(L"LayerBlur2");
+            fallbackBlurL3=makeBlur(L"LayerBlur3");
+            fallbackRimBrush=compositor.CreateLinearGradientBrush();
+            fallbackRimBrush.MappingMode(CompositionMappingMode::Relative);
+            fallbackRimBrush.StartPoint({0,0});fallbackRimBrush.EndPoint({1,1});
+            fallbackRimBrush.ColorStops().Append(compositor.CreateColorGradientStop(0,{140,255,255,255}));
+            fallbackRimBrush.ColorStops().Append(compositor.CreateColorGradientStop(.5f,{36,255,255,255}));
+            fallbackRimBrush.ColorStops().Append(compositor.CreateColorGradientStop(1,{26,255,255,255}));
+        }
         grain=compositor.CreateSpriteVisual();glassRoot.Children().InsertAtTop(grain);
         // One optical edge for BOTH backdrop modes. No bitmap, extra blur,
         // capture or idle animation: only retained compositor geometry. The
@@ -560,7 +648,9 @@ struct Host : std::enable_shared_from_this<Host>
         if(d3d&&graphics&&(materialBackend==1))liquid=std::make_unique<LiquidGlass>(window,shadow,d3d.get(),d3dContext.get(),graphics);
         provider=MakeElement(accessibility,0,true);
         {std::lock_guard lock(accessibility->mutex);accessibility->hwnd=hwnd;accessibility->root=static_cast<IRawElementProviderFragment*>(provider.Get());}
-        check_hresult(PositionHostWindows(0,0,int(std::lround(frame.width*Scale())),int(std::lround(frame.height*Scale())),SWP_NOMOVE));
+        FramePixelGeometry initialGeometry{};
+        check_hresult(ComputeFramePixelGeometry(frame,dpi,presentationOffsetX,presentationOffsetY,initialGeometry));
+        check_hresult(PositionHostWindows(0,0,initialGeometry.allocationWidth,initialGeometry.allocationHeight,SWP_NOMOVE));
         check_hresult(WindowCallResult(SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)));
         check_hresult(WindowCallResult(SetWindowPos(glassWindow,window,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)));
         if(ownedFaulted&&(materialBackend==2))throw_hresult(E_ABORT);
@@ -571,6 +661,9 @@ struct Host : std::enable_shared_from_this<Host>
     void ApplyMaterial()
     {
         if(!tint||ownedFaulted&&(materialBackend==2))return;
+        const bool previousMaterialApplied=materialApplied;
+        const bool previousSolid=materialSolid;
+        const bool previousCapture=materialLiquidCapture;
         if(materialBackend!=1){
             bool active=materialBackend==2&&!ownedFaulted&&ownedImageSet&&ownedEligible&&liquidEnabled&&!frame.solid&&ownedSurface!=nullptr;
             glass.IsVisible(active);clearEdge.IsVisible(false);liquidOverlay.IsVisible(false);
@@ -591,12 +684,19 @@ struct Host : std::enable_shared_from_this<Host>
         bool grainVisible=!solid&&grainSurface!=nullptr;
         if(!materialApplied||solid!=materialSolid||captureActive!=materialLiquidCapture)
         {
+            if(liquidCaptureCandidate){
+                if(std::abs(EffectiveTension())>.0001f)glassRoot.Clip(compositor.CreateGeometricClip(tensionGeometry));
+                else glassRoot.Clip(compositor.CreateGeometricClip(clipGeometry));
+            }
             glass.IsVisible(!solid&&!captureActive&&!liquidPresented);
             clearEdge.IsVisible(!solid&&!captureActive&&liquidEnabled);
-            bevel.IsVisible(!solid&&!opticalReady);opticalLight.IsVisible(!solid&&opticalReady);
+            bevel.IsVisible(!solid&&!captureActive&&!opticalReady);opticalLight.IsVisible(!solid&&!captureActive&&opticalReady);
             liquidOverlay.IsVisible(!solid&&(captureActive||liquidPresented));liquidOverlay.Opacity(captureActive?1.0f:0.0f);
-            liquidRefractionOverlay.IsVisible(!solid&&captureActive);
-            tint.IsVisible(!solid);
+            liquidRefractionOverlay.IsVisible(false);
+            tint.IsVisible(!solid&&!captureActive);
+            // The capture shader owns both diagonal highlights on its SDF.
+            // A second rounded-rectangle stroke would disagree under strain.
+            if(liquidCaptureCandidate)border.IsVisible(!captureActive);
             tint.Brush(solid?solidTintBrush.as<CompositionBrush>():captureActive&&liquidTintCaptureBrush
                 ?liquidTintCaptureBrush.as<CompositionBrush>():tintBrush.as<CompositionBrush>());
             borderShape.StrokeBrush(solid?solidBorderBrush.as<CompositionBrush>():borderBrush.as<CompositionBrush>());
@@ -630,6 +730,132 @@ struct Host : std::enable_shared_from_this<Host>
             {backdrop.Properties().InsertScalar(L"GlassBlur.BlurAmount",blur);clearBackdrop.Properties().InsertScalar(L"GlassEdgeBlur.BlurAmount",std::min(frame.blur,2.5f)*Scale());materialBlur=blur;}
         }
         materialSolid=solid;materialGrainVisible=grainVisible;materialLiquidCapture=captureActive;materialApplied=true;
+        UpdateFallbackLayers();
+        if(!previousMaterialApplied||previousSolid!=solid||previousCapture!=captureActive)
+        {
+            const wchar_t* state=captureActive?L"active":solid?L"solid":L"fallback";
+            const wchar_t* reason=captureActive?L"none":frame.solid?L"solid-requested":fallback?L"graphics-fallback":
+                !liquidEnabled?L"disabled":!visible?L"host-hidden":!liquidCapturePresented?L"waiting-for-capture":L"capture-inactive";
+            wchar_t fields[640]{};
+            swprintf_s(fields,std::size(fields),L"stage=material-transition backend=%u captureCandidate=%u capturedPresented=%u materialState=%ls fallbackReason=%ls activeShaderVersion=0.3 geometrySequence=%llu logicalDip=%.2fx%.2f activePx=%.1fx%.1f dpi=%u theme=%d themeBlend=%.3f solid=%u lensEnabled=%u B=28 D=12 sigma=%.2f split=%.4f",
+                materialBackend,liquidCaptureCandidate?1u:0u,liquidCapturePresented?1u:0u,state,reason,
+                static_cast<unsigned long long>(glassSceneSequence),frame.width,frame.height,
+                frame.width*Scale(),frame.height*Scale(),dpi,liquidSettings.theme,
+                liquidCapture?liquidCapture->DarkThemeWeight():0.0f,solid?1u:0u,
+                liquidSettings.lensEnabled?1u:0u,frame.blur,liquidSettings.dispersion);
+            liquidglass::diagnostics::Log(L"material-transition",fields);
+        }
+    }
+private:
+    bool FallbackDarkTheme()const noexcept
+    {
+        if(liquidSettings.theme==1)return true;
+        if(liquidSettings.theme==0)return false;
+        const ULONGLONG now=GetTickCount64();
+        if(fallbackDarkCheckedMs!=std::numeric_limits<ULONGLONG>::max()&&
+            now-fallbackDarkCheckedMs<1000)return fallbackDarkCached;
+        try{
+            winrt::Windows::UI::ViewManagement::UISettings settings;
+            auto c=settings.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Background);
+            fallbackDarkCached=.299f*c.R+.587f*c.G+.114f*c.B<127.5f;
+            fallbackDarkCheckedMs=now;
+            return fallbackDarkCached;
+        }catch(...){}
+        COLORREF b=GetSysColor(COLOR_WINDOW);
+        fallbackDarkCached=(.299f*GetRValue(b)+.587f*GetGValue(b)+.114f*GetBValue(b))<127.5f;
+        fallbackDarkCheckedMs=now;
+        return fallbackDarkCached;
+    }
+public:
+    void UpdateFallbackLayers()
+    {
+        if(!fallbackLayers)return;
+        const bool show=materialBackend==1&&materialApplied&&!materialSolid&&!materialLiquidCapture&&visible&&!glassSceneShapes.empty();
+        fallbackLayers.IsVisible(show);if(!show)return;
+        const bool dark=FallbackDarkTheme();
+        const float s=Scale();
+        uint64_t key=14695981039346656037ull;
+        auto hashField=[&](auto const& value)
+        {
+            unsigned char bytes[sizeof(value)]{};
+            std::memcpy(bytes,&value,sizeof(value));
+            for(unsigned char byte:bytes){key^=byte;key*=1099511628211ull;}
+        };
+        hashField(s);hashField(frame.blur);hashField(dark);hashField(glassSceneSequence);
+        for(auto const& shape:glassSceneShapes)
+        {
+            hashField(shape.id);hashField(shape.layer);hashField(shape.xDip);hashField(shape.yDip);
+            hashField(shape.widthDip);hashField(shape.heightDip);hashField(shape.radiusDip);
+            hashField(shape.materialize);hashField(shape.press);hashField(shape.enabled);
+        }
+        if(key==fallbackKey)return;
+        const float panelSigma=std::max(0.0f,frame.blur)*s;
+        const float extra2=(dark?7.0f:10.0f)*s, extra3=(dark?4.0f:6.0f)*s;
+        const float sigma2=std::sqrt(panelSigma*panelSigma+extra2*extra2);
+        const float sigma3=std::sqrt(sigma2*sigma2+extra3*extra3);
+        fallbackBlurL2.Properties().InsertScalar(L"LayerBlur2.BlurAmount",std::min(sigma2,250.0f));
+        fallbackBlurL3.Properties().InsertScalar(L"LayerBlur3.BlurAmount",std::min(sigma3,250.0f));
+
+        std::vector<GDGlassShapeV1 const*> selected;selected.reserve(16);
+        for(uint32_t layer:{2u,3u})
+        {
+            for(auto const& shape:glassSceneShapes)
+            {
+                if(shape.layer!=layer||shape.enabled==0||shape.materialize<=0||shape.widthDip<8||shape.heightDip<8)continue;
+                if(selected.size()>=16)break;
+                selected.push_back(&shape);
+            }
+            if(selected.size()>=16)break;
+        }
+        fallbackLayers.Children().RemoveAll();
+        std::vector<uint32_t> activeIds;activeIds.reserve(selected.size());
+        for(auto const* shape:selected)
+        {
+            auto found=std::find_if(fallbackLayerPool.begin(),fallbackLayerPool.end(),
+                [&](FallbackLayer const& item){return item.id==shape->id;});
+            if(found==fallbackLayerPool.end())
+            {
+                FallbackLayer item{};item.id=shape->id;
+                item.body=compositor.CreateSpriteVisual();
+                item.clipShape=compositor.CreateRoundedRectangleGeometry();
+                item.body.Clip(compositor.CreateGeometricClip(item.clipShape));
+                item.veilBrush=compositor.CreateColorBrush();
+                item.veil=compositor.CreateSpriteVisual();item.veil.Brush(item.veilBrush);
+                item.veil.RelativeSizeAdjustment({1,1});item.body.Children().InsertAtTop(item.veil);
+                item.rim=compositor.CreateShapeVisual();item.rim.RelativeSizeAdjustment({1,1});
+                item.rimShape=compositor.CreateRoundedRectangleGeometry();
+                item.rimSprite=compositor.CreateSpriteShape(item.rimShape);
+                item.rimSprite.StrokeBrush(fallbackRimBrush);
+                item.rim.Shapes().Append(item.rimSprite);item.body.Children().InsertAtTop(item.rim);
+                fallbackLayerPool.emplace_back(std::move(item));
+                found=std::prev(fallbackLayerPool.end());
+            }
+            const float x=shape->xDip*s,y=shape->yDip*s,w=shape->widthDip*s,h=shape->heightDip*s;
+            const float r=std::clamp(shape->radiusDip*s,0.0f,std::min(w,h)*.5f);
+            found->body.Offset({x,y,0});found->body.Size({w,h});
+            found->body.Brush(shape->layer==3?fallbackBlurL3:fallbackBlurL2);
+            found->body.Opacity(std::clamp(shape->materialize,0.0f,1.0f));
+            found->clipShape.Size({w,h});found->clipShape.CornerRadius({r,r});
+            const float t=std::max(1.0f,s);
+            found->rimShape.Offset({t*.5f,t*.5f});
+            found->rimShape.Size({std::max(0.0f,w-t),std::max(0.0f,h-t)});
+            found->rimShape.CornerRadius({std::max(0.0f,r-t*.5f),std::max(0.0f,r-t*.5f)});
+            found->rimSprite.StrokeThickness(t);
+            found->rim.Opacity(dark?.55f:1.0f);
+            unsigned char veilAlpha=dark?(shape->layer==3?26:15):(shape->layer==3?64:46);
+            veilAlpha=static_cast<unsigned char>(std::min(255.0f,float(veilAlpha)+shape->press*20.0f));
+            found->veilBrush.Color({veilAlpha,255,255,255});
+            activeIds.push_back(shape->id);
+        }
+        fallbackLayerPool.erase(std::remove_if(fallbackLayerPool.begin(),fallbackLayerPool.end(),
+            [&](FallbackLayer const& item){return std::find(activeIds.begin(),activeIds.end(),item.id)==activeIds.end();}),fallbackLayerPool.end());
+        for(auto const* shape:selected)
+        {
+            auto found=std::find_if(fallbackLayerPool.begin(),fallbackLayerPool.end(),
+                [&](FallbackLayer const& item){return item.id==shape->id;});
+            if(found!=fallbackLayerPool.end())fallbackLayers.Children().InsertAtTop(found->body);
+        }
+        fallbackKey=key;
     }
     std::vector<GDPoint> TensionContour(float width,float height,float radius,float strain,float inset=0)
     {
@@ -661,27 +887,37 @@ struct Host : std::enable_shared_from_this<Host>
         auto source=make<RetainedGeometrySource>(ring.as<ID2D1Geometry>());
         clearEdgeGeometry.Path(CompositionPath(source));
     }
-    void Layout()
+    void Layout(bool submitSurfaces=true)
     {
-        if(!root||ownedFaulted&&(materialBackend==2))return;
+        if(!root||deferFrameSurfaceUpdates||ownedFaulted&&(materialBackend==2))return;
         RECT client{};check_hresult(WindowCallResult(GetClientRect(window,&client)));int width=client.right,height=client.bottom;
         if(false)root.Size({float(width),float(height)});
-        float scale=Scale(),radius=SurfaceRadius(float(width),float(height),frame.radius*scale,EffectiveTension());
+        float scale=Scale();
+        FramePixelGeometry geometry{};
+        check_hresult(ComputeFramePixelGeometry(frame,dpi,presentationOffsetX,presentationOffsetY,geometry));
+        const float shapeWidth=liquidCaptureCandidate?geometry.shapeWidth:float(width);
+        const float shapeHeight=liquidCaptureCandidate?geometry.shapeHeight:float(height);
+        root.Offset({presentationOffsetX,presentationOffsetY,0});
+        glassRoot.Offset({presentationOffsetX,presentationOffsetY,0});
+        float radius=SurfaceRadius(shapeWidth,shapeHeight,frame.radius*scale,EffectiveTension());
         float strain=EffectiveTension();bool deforming=std::abs(strain)>.0001f;
         bool enhanced=materialBackend==1&&liquidEnabled&&!frame.solid&&!fallback;
-        if(width!=cachedWidth||height!=cachedHeight||radius!=cachedRadius||dpi!=cachedDpi||strain!=cachedTension||enhanced!=cachedClearEdge)
+        if(width!=cachedWidth||height!=cachedHeight||shapeWidth!=cachedShapeWidth||shapeHeight!=cachedShapeHeight||radius!=cachedRadius||dpi!=cachedDpi||strain!=cachedTension||enhanced!=cachedClearEdge)
         {
-            auto size=winrt::Windows::Foundation::Numerics::float2{float(width),float(height)};
+            auto size=winrt::Windows::Foundation::Numerics::float2{shapeWidth,shapeHeight};
             glass.Size(size);clearEdge.Size(size);liquidOverlay.Size(size);liquidRefractionOverlay.Size(size);tint.Size(size);grain.Size(size);border.Size(size);bevel.Size(size);opticalLight.Size(size);
+            // The material surface is an unscaled physical-pixel viewport. Its SDF
+            // supplies fractional-size coverage; only HWND allocation is integral.
+            if(liquidCaptureCandidate)liquidOverlay.Size({float(width),float(height)});
             clipGeometry.Size(size);clipGeometry.CornerRadius({radius,radius});
-            borderGeometry.Offset({scale*.5f,scale*.5f});borderGeometry.Size({std::max(0.0f,width-scale),std::max(0.0f,height-scale)});
+            borderGeometry.Offset({scale*.5f,scale*.5f});borderGeometry.Size({std::max(0.0f,shapeWidth-scale),std::max(0.0f,shapeHeight-scale)});
             borderGeometry.CornerRadius({std::max(0.0f,radius-scale*.5f),std::max(0.0f,radius-scale*.5f)});borderShape.StrokeThickness(scale);
             // All insets scale in DIP and follow the live silhouette. Clamp for
             // tiny intermediate frames; no negative size/corner can reach DWM.
-            float edgeUnit=std::min(scale,std::min(width,height)/12.0f);
+            float edgeUnit=std::min(scale,std::min(shapeWidth,shapeHeight)/12.0f);
             auto edgeGeometry=[&](CompositionRoundedRectangleGeometry const& geometry,float inset)
             {
-                geometry.Offset({inset,inset});geometry.Size({std::max(0.0f,width-inset*2),std::max(0.0f,height-inset*2)});
+                geometry.Offset({inset,inset});geometry.Size({std::max(0.0f,shapeWidth-inset*2),std::max(0.0f,shapeHeight-inset*2)});
                 float innerRadius=std::max(0.0f,radius-inset);geometry.CornerRadius({innerRadius,innerRadius});
             };
             edgeGeometry(shoulderGeometry,edgeUnit*2.75f);shoulderShape.StrokeThickness(edgeUnit*3.5f);
@@ -699,7 +935,7 @@ struct Host : std::enable_shared_from_this<Host>
             if(deforming)
             {
                 if(!geometryFactory)check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,geometryFactory.put()));
-                auto points=TensionContour(float(width),float(height),radius,strain);
+                auto points=TensionContour(shapeWidth,shapeHeight,radius,strain);
                 auto source=make<GeometrySource>(geometryFactory.get(),points,.35f*scale);
                 tensionGeometry.Path(CompositionPath(source));root.Clip(compositor.CreateGeometricClip(tensionGeometry));glassRoot.Clip(compositor.CreateGeometricClip(tensionGeometry));
                 std::vector<POINT> polygon;polygon.reserve(points.size());
@@ -716,20 +952,30 @@ struct Host : std::enable_shared_from_this<Host>
                 HRGN glassRegion=CreateRoundRectRgn(-1,-1,width+2,height+2,int(std::ceil(radius*2)),int(std::ceil(radius*2)));
                 if(glassRegion&&!SetWindowRgn(glassWindow,glassRegion,TRUE))DeleteObject(glassRegion);
             }
+            // Composition owns the exact fractional contour. The HWND region
+            // is only a conservative allocation/input envelope during morphs.
+            if(liquidCaptureCandidate){
+                if(region)DeleteObject(region);
+                region=CreateRectRgn(0,0,width,height);
+                HRGN glassRegion=CreateRectRgn(0,0,width,height);
+                if(glassRegion&&!SetWindowRgn(glassWindow,glassRegion,TRUE))DeleteObject(glassRegion);
+            }
             if(region&&!SetWindowRgn(window,region,TRUE))DeleteObject(region);
-            cachedWidth=width;cachedHeight=height;cachedRadius=radius;cachedDpi=dpi;cachedTension=strain;cachedClearEdge=enhanced;
-            if(enhanced)UpdateClearEdge(float(width),float(height),radius,strain);
+            cachedWidth=width;cachedHeight=height;cachedShapeWidth=shapeWidth;cachedShapeHeight=shapeHeight;cachedRadius=radius;cachedDpi=dpi;cachedTension=strain;cachedClearEdge=enhanced;
+            if(enhanced&&!liquidCaptureCandidate)UpdateClearEdge(float(width),float(height),radius,strain);
         }
         // DIP animation dimensions may change while rounded physical size is
         // unchanged; the C# visual tree still receives the exact DIP frame.
-        // The owned shader supplies coverage once; a second geometric clip
-        // would multiply antialiasing at its edge. HWND input region remains.
+        // The capture shader leaves a one-pixel color apron, and this shared
+        // Composition clip supplies the outer antialiased contour.
         if(materialBackend==2){root.Clip(nullptr);glassRoot.Clip(nullptr);}
-        content.Size({frame.width,frame.height});ApplyMaterial();UpdateShadow();UpdateLiquid();
+        content.Size({frame.width,frame.height});ApplyMaterial();UpdateFallbackLayers();if(submitSurfaces){UpdateShadow();UpdateLiquid();}
     }
     void StopLiquidCapture() noexcept
     {
         if(window)KillTimer(window,LiquidCaptureTimer);
+        liquidCaptureRetryStartedMs=0;liquidCaptureRetryDelayMs=16;
+        liquidCaptureGeometryRetrying=false;liquidCaptureSurfaceRetrying=false;
         try{if(liquidOverlay){liquidOverlay.StopAnimation(L"Opacity");liquidOverlay.IsVisible(false);liquidOverlay.Opacity(0);liquidOverlay.Brush(nullptr);}}
         catch(...){}
         try{if(liquidRefractionOverlay){liquidRefractionOverlay.IsVisible(false);liquidRefractionOverlay.Brush(nullptr);}}
@@ -742,6 +988,23 @@ struct Host : std::enable_shared_from_this<Host>
         ++liquidInkSurfaceGeneration;liquidCapturePresented=false;
         if(liquidCapture)liquidCapture->SetEnabled(false);
         liquidCapture.reset();
+    }
+    void ResetLiquidCaptureRetry() noexcept
+    {
+        liquidCaptureRetryStartedMs=0;liquidCaptureRetryDelayMs=16;
+        liquidCaptureGeometryRetrying=false;liquidCaptureSurfaceRetrying=false;
+    }
+    bool ScheduleLiquidCaptureRetry(bool geometry,bool surface=false) noexcept
+    {
+        if(!window)return false;
+        const ULONGLONG now=GetTickCount64();
+        if(liquidCaptureRetryStartedMs==0)
+        {liquidCaptureRetryStartedMs=now;liquidCaptureRetryDelayMs=16;}
+        else liquidCaptureRetryDelayMs=std::min<UINT>(liquidCaptureRetryDelayMs*2u,250u);
+        liquidCaptureGeometryRetrying=geometry;
+        liquidCaptureSurfaceRetrying=surface;
+        if(SetTimer(window,LiquidCaptureTimer,liquidCaptureRetryDelayMs,nullptr)!=0)return true;
+        ResetLiquidCaptureRetry();return false;
     }
     void AttachLiquidSwapChains(IDXGISwapChain1* baseSwapChain,IDXGISwapChain1* refractionSwapChain,
                                 IDXGISwapChain1* tintSwapChain,IDXGISwapChain1* inkSwapChain)
@@ -760,17 +1023,117 @@ struct Host : std::enable_shared_from_this<Host>
         liquidRefractionSurface=createSurface(refractionSwapChain);
         liquidTintSurface=createSurface(tintSwapChain);
         liquidInkSurface=createSurface(inkSwapChain);
-        liquidCaptureBrush=compositor.CreateSurfaceBrush(liquidCaptureSurface);liquidCaptureBrush.Stretch(CompositionStretch::Fill);
+        liquidCaptureBrush=compositor.CreateSurfaceBrush(liquidCaptureSurface);liquidCaptureBrush.Stretch(CompositionStretch::None);
+        liquidCaptureBrush.HorizontalAlignmentRatio(0);liquidCaptureBrush.VerticalAlignmentRatio(0);
         liquidRefractionBrush=compositor.CreateSurfaceBrush(liquidRefractionSurface);liquidRefractionBrush.Stretch(CompositionStretch::Fill);
         liquidTintCaptureBrush=compositor.CreateSurfaceBrush(liquidTintSurface);liquidTintCaptureBrush.Stretch(CompositionStretch::Fill);
         liquidOverlay.Brush(liquidCaptureBrush);liquidRefractionOverlay.Brush(liquidRefractionBrush);
         attachedLiquidSwapChain=baseSwapChain;attachedLiquidRefractionSwapChain=refractionSwapChain;
         attachedLiquidTintSwapChain=tintSwapChain;attachedLiquidInkSwapChain=inkSwapChain;
         ++liquidInkSurfaceGeneration;
+        wchar_t fields[384]{};
+        swprintf_s(fields,std::size(fields),L"stage=attach-surface component=CompositionSwapChain backend=WGC captureCandidate=%u capturedPresented=%u materialState=%ls fallbackReason=none activeShaderVersion=0.3 geometrySequence=%llu logicalDip=%.2fx%.2f activePx=%.1fx%.1f dpi=%u outputGeneration=%llu",
+            liquidCaptureCandidate?1u:0u,liquidCapture&&liquidCapture->HasPresentedFrame()?1u:0u,
+            liquidCapture&&liquidCapture->HasPresentedFrame()?L"active":L"waiting",
+            static_cast<unsigned long long>(glassSceneSequence),frame.width,frame.height,
+            frame.width*Scale(),frame.height*Scale(),dpi,static_cast<unsigned long long>(liquidInkSurfaceGeneration));
+        liquidglass::diagnostics::Log(L"surface-attached",fields);
     }
-    void UpdateLiquidCapture() noexcept
+    HRESULT SynchronizeLiquidCaptureGeometry(liquidglass::CaptureRect& captureRect,RECT& contentBounds,RECT& glassBounds,
+        bool& repaired) noexcept
     {
-        if(!liquidCaptureCandidate||!window||destroying)return;
+        repaired=false;
+        captureRect.shapeWidthPixels=frame.width*Scale();
+        captureRect.shapeHeightPixels=frame.height*Scale();
+        captureRect.dpiScale=Scale();captureRect.surfaceTension=EffectiveTension();
+        if(!GetWindowRect(window,&contentBounds)||!GetWindowRect(glassWindow,&glassBounds))
+            return HRESULT_FROM_WIN32(GetLastError());
+        if(glassSceneSequence!=appliedGlassSceneSequence)return HRESULT_FROM_WIN32(ERROR_RETRY);
+        const unsigned geometryDpi=dpi;
+        const GDFrame geometryFrame=frame;
+        const float geometryOffsetX=presentationOffsetX,geometryOffsetY=presentationOffsetY;
+        const float geometryTension=surfaceTension;
+        const uint64_t geometrySequence=appliedGlassSceneSequence;
+        const bool geometryEnabled=liquidEnabled,geometrySolid=frame.solid!=0,geometryFallback=fallback;
+        FramePixelGeometry expected{};
+        HRESULT hr=ComputeFramePixelGeometry(frame,dpi,presentationOffsetX,presentationOffsetY,expected);
+        if(FAILED(hr))return hr;
+        captureRect.shapeWidthPixels=expected.shapeWidth;captureRect.shapeHeightPixels=expected.shapeHeight;
+        captureRect.sequence=appliedGlassSceneSequence;
+        captureRect.glassShapes=glassSceneShapes.empty()?nullptr:glassSceneShapes.data();
+        captureRect.glassShapeCount=static_cast<uint32_t>(glassSceneShapes.size());
+        auto sizeMatches=[&](RECT const& bounds)
+        {return bounds.right-bounds.left==expected.allocationWidth&&bounds.bottom-bounds.top==expected.allocationHeight;};
+        const bool windowsMatch=contentBounds.left==glassBounds.left&&contentBounds.top==glassBounds.top&&
+            contentBounds.right==glassBounds.right&&contentBounds.bottom==glassBounds.bottom;
+        if(!windowsMatch||!sizeMatches(contentBounds)||!sizeMatches(glassBounds))
+        {
+            hr=PositionHostWindows(contentBounds.left,contentBounds.top,expected.allocationWidth,expected.allocationHeight,SWP_NOACTIVATE);
+            if(FAILED(hr))return hr;
+            repaired=true;
+            if(!GetWindowRect(window,&contentBounds)||!GetWindowRect(glassWindow,&glassBounds))
+                return HRESULT_FROM_WIN32(GetLastError());
+            // Moving between monitors can synchronously dispatch WM_DPICHANGED.
+            // Reject that superseded snapshot and recompute before rendering.
+            if(dpi!=geometryDpi||frame.width!=geometryFrame.width||frame.height!=geometryFrame.height||
+                frame.radius!=geometryFrame.radius||presentationOffsetX!=geometryOffsetX||presentationOffsetY!=geometryOffsetY||
+                surfaceTension!=geometryTension||glassSceneSequence!=geometrySequence||
+                appliedGlassSceneSequence!=geometrySequence||liquidEnabled!=geometryEnabled||
+                (frame.solid!=0)!=geometrySolid||fallback!=geometryFallback)
+                return HRESULT_FROM_WIN32(ERROR_RETRY);
+            // Rebuild both foreground and glass from the completed allocation.
+            try{Layout(false);}catch(...){return to_hresult();}
+        }
+        const bool synchronized=contentBounds.left==glassBounds.left&&contentBounds.top==glassBounds.top&&
+            contentBounds.right==glassBounds.right&&contentBounds.bottom==glassBounds.bottom&&
+            sizeMatches(contentBounds)&&sizeMatches(glassBounds);
+        if(!synchronized)return HRESULT_FROM_WIN32(ERROR_RETRY);
+        captureRect.screenX=float(glassBounds.left)+presentationOffsetX;
+        captureRect.screenY=float(glassBounds.top)+presentationOffsetY;
+        captureRect.widthPixels=glassBounds.right-glassBounds.left;
+        captureRect.heightPixels=glassBounds.bottom-glassBounds.top;
+        captureRect.radiusPixels=cachedRadius;
+        captureRect.dpiScale=Scale();
+        captureRect.surfaceTension=EffectiveTension();
+        captureRect.motionActive=captureMotionActive;
+        captureRect.sequence=appliedGlassSceneSequence;
+        captureRect.glassShapes=glassSceneShapes.empty()?nullptr:glassSceneShapes.data();
+        captureRect.glassShapeCount=static_cast<uint32_t>(glassSceneShapes.size());
+        return S_OK;
+    }
+    void LogLiquidCaptureError(HRESULT failure,wchar_t const* stage,liquidglass::CaptureRect const* captureRect,
+        RECT const& contentBounds,RECT const& glassBounds,bool geometryRetry) noexcept
+    {
+        const ULONGLONG now=GetTickCount64();
+        if(geometryRetry&&lastGeometryFailureLogMs!=0&&wcscmp(lastGeometryFailureLogStage,stage)==0&&
+            lastGeometryFailureLogCode==failure&&now-lastGeometryFailureLogMs<1000)return;
+        if(geometryRetry){lastGeometryFailureLogStage=stage;lastGeometryFailureLogCode=failure;lastGeometryFailureLogMs=now;}
+        const liquidglass::CaptureDiagnosticSnapshot capture=liquidCapture?liquidCapture->GetDiagnostics():liquidglass::CaptureDiagnosticSnapshot{};
+        const float scale=dpi?static_cast<float>(dpi)/96.0f:0.0f;
+        const float originX=captureRect?captureRect->screenX:0.0f,originY=captureRect?captureRect->screenY:0.0f;
+        const float fractionalX=originX-std::floor(originX),fractionalY=originY-std::floor(originY);
+        const unsigned long long sequence=captureRect?static_cast<unsigned long long>(captureRect->sequence):0ull;
+        wchar_t fields[1024]{};
+        swprintf_s(fields,std::size(fields),
+            L"stage=%ls component=liquid-capture hr=0x%08X exceptionType=HRESULT stack=unavailable backend=WGC captureCandidate=%u capturedPresented=%u materialState=%ls fallbackReason=%ls logicalDip=%.2fx%.2f panelPx=%dx%d activePx=%ux%u allocPx=%ux%u capacityPx=%ux%u paddingPx=%d originPx=fractional-only fractionalOffset=%.4f,%.4f monitorSizePx=%ux%u hostWindowPx=%ldx%ld glassWindowPx=%ldx%ld dpi=%u scale=%.4f geometrySequence=%llu captureGeneration=%llu sourceFormatCode=%u sourceSizePx=%ux%u contentSizePx=%ux%u layer=1 shapeId=0 opIndex=unknown opKind=unknown opRect=none opTextRole=none theme=%d lensEnabled=%u B=28 D=12 sigma=%.2f split=%.4f activeShaderVersion=%ls tension=%.5f alphaContract=opaque-linear-intermediate",
+            stage?stage:L"unknown",static_cast<unsigned>(failure),liquidCaptureCandidate?1u:0u,
+            liquidCapturePresented?1u:0u,liquidCapturePresented?L"active":L"fallback",
+            geometryRetry?L"retryable-geometry":L"capture-or-surface-failure",frame.width,frame.height,
+            captureRect?captureRect->widthPixels:0,captureRect?captureRect->heightPixels:0,
+            capture.activeWidth?capture.activeWidth:static_cast<uint32_t>(captureRect?captureRect->widthPixels:0),
+            capture.activeHeight?capture.activeHeight:static_cast<uint32_t>(captureRect?captureRect->heightPixels:0),
+            capture.capacityWidth,capture.capacityHeight,capture.capacityWidth,capture.capacityHeight,capture.paddingPixels,
+            fractionalX,fractionalY,capture.monitorWidth,capture.monitorHeight,
+            contentBounds.right-contentBounds.left,contentBounds.bottom-contentBounds.top,
+            glassBounds.right-glassBounds.left,glassBounds.bottom-glassBounds.top,dpi,scale,sequence,
+            static_cast<unsigned long long>(capture.captureGeneration),capture.sourceFormat,capture.sourceWidth,capture.sourceHeight,
+            capture.contentWidth,capture.contentHeight,liquidSettings.theme,liquidSettings.lensEnabled?1u:0u,
+            frame.blur,liquidSettings.dispersion,capture.presented?L"0.3":L"none",EffectiveTension());
+        liquidglass::diagnostics::Log(L"capture-error",fields);
+    }
+    void UpdateLiquidCapture(bool allowImmediateGeometryRetry=true) noexcept
+    {
+        if(!liquidCaptureCandidate||!window||destroying||deferFrameSurfaceUpdates)return;
         if(!liquidEnabled)
         {
             StopLiquidCapture();liquidCaptureFailure=S_OK;liquidCaptureFuseTripped=false;try{ApplyMaterial();}catch(...){}return;
@@ -778,40 +1141,87 @@ struct Host : std::enable_shared_from_this<Host>
         if(!visible||frame.solid)
         {StopLiquidCapture();try{ApplyMaterial();}catch(...){}return;}
         if(FAILED(liquidCaptureFailure)){try{ApplyMaterial();}catch(...){}return;}
+        liquidglass::CaptureRect rect{};RECT contentBounds{},glassBounds{};bool geometryRepaired{};
+        const HRESULT geometry=SynchronizeLiquidCaptureGeometry(rect,contentBounds,glassBounds,geometryRepaired);
+        if(FAILED(geometry))
+        {
+            const bool retry=geometry==E_INVALIDARG||geometry==E_BOUNDS||geometry==HRESULT_FROM_WIN32(ERROR_RETRY);
+            LogLiquidCaptureError(geometry,L"synchronize-window-geometry",&rect,contentBounds,glassBounds,retry);
+            if(geometry==HRESULT_FROM_WIN32(ERROR_RETRY)&&allowImmediateGeometryRetry)
+            {UpdateLiquidCapture(false);return;}
+            // Also retry when synchronization failed before a capture existed.
+            if(retry&&!ScheduleLiquidCaptureRetry(true))
+                LogLiquidCaptureError(WindowCallResult(FALSE),L"schedule-geometry-retry",&rect,contentBounds,glassBounds,false);
+            else if(!retry)
+            {liquidCaptureFailure=geometry;StopLiquidCapture();}
+            try{ApplyMaterial();}catch(...){}
+            return;
+        }
+        wchar_t const* stage=L"create-capture";
         try
         {
             if(!liquidCapture)
             {
                 if(!d3d||!d3dContext)throw_hresult(E_FAIL);
                 liquidCapture=std::make_unique<liquidglass::LiquidGlassCapture>(glassWindow,window,shadow,true,d3d.get(),d3dContext.get());
-                if(!SetTimer(window,LiquidCaptureTimer,16,nullptr))throw_hresult(HRESULT_FROM_WIN32(GetLastError()));
+                check_hresult(liquidCapture->SetSettings(liquidSettings));
+                if(!SetTimer(window,LiquidCaptureTimer,16,nullptr))
+                    LogLiquidCaptureError(WindowCallResult(FALSE),L"schedule-capture-retry",&rect,contentBounds,glassBounds,false);
             }
-            RECT bounds{};
-            HRESULT boundsResult=DwmGetWindowAttribute(glassWindow,DWMWA_EXTENDED_FRAME_BOUNDS,&bounds,sizeof(bounds));
-            if(FAILED(boundsResult))boundsResult=GetWindowRect(glassWindow,&bounds)?S_OK:HRESULT_FROM_WIN32(GetLastError());
-            check_hresult(boundsResult);
-            const LONG width=std::max<LONG>(0,bounds.right-bounds.left);
-            const LONG height=std::max<LONG>(0,bounds.bottom-bounds.top);
-            liquidglass::CaptureRect rect{};
-            rect.screenX=static_cast<int>(bounds.left);rect.screenY=static_cast<int>(bounds.top);
-            rect.widthPixels=static_cast<int>(width);rect.heightPixels=static_cast<int>(height);
-            rect.radiusPixels=cachedRadius;rect.dpiScale=Scale();
+            stage=L"update-capture";
             const HRESULT update=liquidCapture->Update(rect);
-            if(liquidCapture->FuseTripped()){liquidCaptureFuseTripped=true;throw_hresult(FAILED(update)?update:E_ABORT);}
-            if(FAILED(update))throw_hresult(update);
+            try{UpdateShadow();}catch(...){}
+            if(liquidCapture->FuseTripped())
+            {liquidCaptureFuseTripped=true;throw_hresult(FAILED(update)?update:E_ABORT);}
+            if(FAILED(update))
+            {
+                if(liquidCapture->IsRecoverableGeometryFailure(update))
+                {
+                    LogLiquidCaptureError(update,liquidglass::CaptureFailureStageName(liquidCapture->LastFailureStage()),
+                        &rect,contentBounds,glassBounds,true);
+                    if(!ScheduleLiquidCaptureRetry(true))
+                        LogLiquidCaptureError(WindowCallResult(FALSE),L"schedule-geometry-retry",&rect,contentBounds,glassBounds,false);
+                    try{ApplyMaterial();}catch(...){}
+                    if(allowImmediateGeometryRetry)
+                    {
+                        bool repaired{};
+                        liquidglass::CaptureRect retryRect{};RECT retryContent{},retryGlass{};
+                        const HRESULT sync=SynchronizeLiquidCaptureGeometry(retryRect,retryContent,retryGlass,repaired);
+                        if(SUCCEEDED(sync)&&repaired)UpdateLiquidCapture(false);
+                    }
+                    return;
+                }
+                throw_hresult(update);
+            }
+            lastGeometryFailureLogMs=0;
+            ResetLiquidCaptureRetry();
             auto* swapChain=static_cast<IDXGISwapChain1*>(liquidCapture->OutputSwapChain());
             auto* refractionSwapChain=static_cast<IDXGISwapChain1*>(liquidCapture->RefractionSwapChain());
             auto* tintSwapChain=static_cast<IDXGISwapChain1*>(liquidCapture->TintSwapChain());
             auto* inkSwapChain=static_cast<IDXGISwapChain1*>(liquidCapture->InkColorSwapChain());
+            stage=L"attach-swap-chains";
             if(swapChain&&refractionSwapChain&&tintSwapChain&&inkSwapChain)
                 AttachLiquidSwapChains(swapChain,refractionSwapChain,tintSwapChain,inkSwapChain);
             liquidCapturePresented=liquidCapture->HasPresentedFrame();
             if(liquidCapturePresented&&(!swapChain||!refractionSwapChain||!tintSwapChain||!inkSwapChain))throw_hresult(E_POINTER);
-            ApplyMaterial();
+            stage=L"apply-material";ApplyMaterial();
         }
         catch(...)
         {
-            liquidCaptureFailure=to_hresult();LogLiquidCaptureFailure(liquidCaptureFailure);StopLiquidCapture();try{ApplyMaterial();}catch(...){}
+            const HRESULT failure=to_hresult();
+            if(wcscmp(stage,L"attach-swap-chains")==0)
+            {
+                LogLiquidCaptureError(failure,stage,&rect,contentBounds,glassBounds,true);
+                if(!ScheduleLiquidCaptureRetry(false,true))
+                    LogLiquidCaptureError(WindowCallResult(FALSE),L"schedule-surface-retry",&rect,contentBounds,glassBounds,false);
+                try{ApplyMaterial();}catch(...){}
+                return;
+            }
+            liquidCaptureFailure=failure;
+            if(liquidCapture&&wcscmp(stage,L"update-capture")==0)
+                stage=liquidglass::CaptureFailureStageName(liquidCapture->LastFailureStage());
+            LogLiquidCaptureError(liquidCaptureFailure,stage,&rect,contentBounds,glassBounds,false);
+            StopLiquidCapture();try{ApplyMaterial();}catch(...){}
         }
     }
     void UpdateLiquid()
@@ -939,8 +1349,35 @@ struct Host : std::enable_shared_from_this<Host>
         if(panelWidth<1||panelHeight<1)return;
         auto scale=Scale();int margin=int(std::ceil(24*scale));
         int width=panelWidth+margin*2,height=panelHeight+margin*2;
-        float radius=SurfaceRadius(float(panelWidth),float(panelHeight),frame.radius*scale,EffectiveTension());
-        bool repaint=shadowOpticalProfile||width!=shadowWidth||height!=shadowHeight||radius!=shadowRadius||dpi!=shadowDpi||EffectiveTension()!=shadowTension;
+        FramePixelGeometry geometry{};
+        check_hresult(ComputeFramePixelGeometry(frame,dpi,presentationOffsetX,presentationOffsetY,geometry));
+        const float shapeWidth=liquidCaptureCandidate?geometry.shapeWidth:float(panelWidth);
+        const float shapeHeight=liquidCaptureCandidate?geometry.shapeHeight:float(panelHeight);
+        float radius=SurfaceRadius(shapeWidth,shapeHeight,frame.radius*scale,EffectiveTension());
+        float darkWeight=0.0f,shadowScale=1.0f;
+        const bool glassCssShadow=materialBackend==1&&liquidCaptureCandidate&&liquidEnabled&&liquidCapturePresented;
+        if(glassCssShadow)
+        {
+            if(liquidCapture)
+            {
+                darkWeight=liquidCapture->DarkThemeWeight();
+                shadowScale=liquidCapture->ShadowScale();
+            }
+            else
+            {
+                darkWeight=liquidSettings.theme==1?1.0f:liquidSettings.theme==0?0.0f:0.0f;
+                if(liquidSettings.theme==2)
+                {
+                    COLORREF systemBackground=GetSysColor(COLOR_WINDOW);
+                    float luminance=(.299f*GetRValue(systemBackground)+.587f*GetGValue(systemBackground)+.114f*GetBValue(systemBackground))/255.0f;
+                    darkWeight=luminance<.5f?1.0f:0.0f;
+                }
+                shadowScale=darkWeight>.5f?liquidSettings.dark.shadow:liquidSettings.light.shadow;
+            }
+        }
+        bool repaint=shadowShapeWidth!=shapeWidth||shadowShapeHeight!=shapeHeight||shadowOffsetX!=presentationOffsetX||shadowOffsetY!=presentationOffsetY
+            ||shadowOpticalProfile||width!=shadowWidth||height!=shadowHeight||radius!=shadowRadius||dpi!=shadowDpi||EffectiveTension()!=shadowTension
+            ||shadowScale!=shadowMaterialScale||darkWeight!=shadowThemeWeight||glassCssShadow!=shadowGlassCss;
         int positionX=rectangle.left-margin,positionY=rectangle.top-margin;
         bool moved=positionX!=shadowX||positionY!=shadowY;
         if(!forceOrder&&!repaint&&!moved&&visible==shadowShown)return;
@@ -958,17 +1395,38 @@ struct Host : std::enable_shared_from_this<Host>
         if(repaint)
         {
             auto pixels=static_cast<unsigned*>(shadowBits);std::fill(pixels,pixels+size_t(width)*height,0u);
-            float sigma=8*scale,offset=4*scale;
+            float sigma=std::lerp(8.0f,7.0f,darkWeight)*scale,offset=4*scale;
             for(int y=0;y<height;++y)for(int x=0;x<width;++x)
             {
-                float localX=x-margin+.5f,localY=y-margin+.5f;
-                if(SurfaceDistance(localX,localY,float(panelWidth),float(panelHeight),radius,scale,EffectiveTension())<=0)continue;
-                float distance=std::max(0.0f,SurfaceDistance(localX,localY-offset,float(panelWidth),float(panelHeight),radius,scale,EffectiveTension()));
-                auto alpha=static_cast<unsigned>(std::lround(24*std::exp(-distance*distance/(2*sigma*sigma))));
-                pixels[size_t(y)*width+x]=alpha<<24; // Premultiplied black, with a transparent center.
+                float localX=static_cast<float>(x-margin)+.5f-presentationOffsetX;
+                float localY=static_cast<float>(y-margin)+.5f-presentationOffsetY;
+                if(glassCssShadow)
+                {
+                    float edgeDistance=SurfaceDistance(localX,localY,shapeWidth,shapeHeight,radius,scale,EffectiveTension());
+                    if(edgeDistance<=0)continue;
+                    float shadowDistance=std::max(0.0f,SurfaceDistance(localX,localY-offset,shapeWidth,shapeHeight,radius,scale,EffectiveTension()));
+                    // The two exterior glass.css layers: the half-pixel outline
+                    // and the offset 16px (light) / 14px (dark) soft shadow.
+                    float outline=std::clamp((.12f+(.28f-.12f)*darkWeight)*shadowScale,0.0f,.95f);
+                    float soft=std::clamp((.10f+(.22f-.10f)*darkWeight)*shadowScale,0.0f,.95f)
+                        *std::exp(-shadowDistance*shadowDistance/(2*sigma*sigma));
+                    float outlineCoverage=std::clamp(.5f*scale+.5f-edgeDistance,0.0f,1.0f);
+                    float alpha=1.0f-(1.0f-outline*outlineCoverage)*(1.0f-soft);
+                    pixels[size_t(y)*width+x]=static_cast<unsigned>(std::lround(alpha*255.0f))<<24; // Premultiplied black, transparent center.
+                }
+                else
+                {
+                    if(SurfaceDistance(localX,localY,shapeWidth,shapeHeight,radius,scale,EffectiveTension())<=0)continue;
+                    float distance=std::max(0.0f,SurfaceDistance(localX,localY-offset,shapeWidth,shapeHeight,radius,scale,EffectiveTension()));
+                    auto alpha=static_cast<unsigned>(std::lround(24*std::exp(-distance*distance/(2*sigma*sigma))));
+                    pixels[size_t(y)*width+x]=alpha<<24;
+                }
             }
             shadowRadius=radius;shadowDpi=dpi;shadowTension=EffectiveTension();
+            shadowShapeWidth=shapeWidth;shadowShapeHeight=shapeHeight;shadowOffsetX=presentationOffsetX;shadowOffsetY=presentationOffsetY;
             shadowOpticalProfile=false;
+            shadowMaterialScale=shadowScale;shadowThemeWeight=darkWeight;
+            shadowGlassCss=glassCssShadow;
         }
         POINT position{positionX,positionY},source{};SIZE size{width,height};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
         if(repaint)check_bool(UpdateLayeredWindow(shadow,nullptr,&position,&size,shadowDc,&source,0,&blend,ULW_ALPHA)!=FALSE);
@@ -1112,6 +1570,7 @@ struct Host : std::enable_shared_from_this<Host>
         com_ptr<ID2D1SolidColorBrush> brush;check_hresult(context->CreateSolidColorBrush(D2D1::ColorF(0,0,0,1),brush.put()));
         for(unsigned index=0;index<count;++index)
         {
+            renderOpIndex=index;
             auto const& extension=operations[index];auto const& op=extension.legacy;
             if(extension.textRole&&(op.kind==2||op.kind==7))
             {
@@ -1123,6 +1582,28 @@ struct Host : std::enable_shared_from_this<Host>
             }
             else Paint(context,&op,1,brush.get()); // Exact legacy/icon/non-text branch.
         }
+    }
+    void LogRenderV2Failure(wchar_t const* stage,HRESULT failure,wchar_t const* exceptionType,
+        float width,float height,GDOpV2 const* operations,unsigned count) noexcept
+    {
+        const uint32_t index=renderOpIndex;
+        const ULONGLONG now=GetTickCount64();
+        if(lastRenderErrorLogMs!=0&&lastRenderErrorLogHr==failure&&lastRenderErrorLogIndex==index&&
+            wcscmp(lastRenderErrorLogStage,stage)==0&&now-lastRenderErrorLogMs<1000)return;
+        lastRenderErrorLogMs=now;lastRenderErrorLogHr=failure;lastRenderErrorLogIndex=index;lastRenderErrorLogStage=stage;
+        int kind=-1;uint32_t textRole=0;float x=0,y=0,w=0,h=0;
+        if(index<count&&operations)
+        {
+            const GDOpV2& operation=operations[index];kind=operation.legacy.kind;textRole=operation.textRole;
+            x=operation.legacy.x;y=operation.legacy.y;w=operation.legacy.width;h=operation.legacy.height;
+        }
+        wchar_t fields[768]{};
+        swprintf_s(fields,std::size(fields),L"stage=%ls component=GDRenderSurfaceV2 hr=0x%08X exceptionType=%ls stack=unavailable backend=native-surface captureCandidate=%u capturedPresented=%u materialState=%ls fallbackReason=surface-error geometrySequence=%llu logicalDip=%.2fx%.2f activePx=%.1fx%.1f allocPx=unknown capacityPx=unknown paddingPx=unknown originPx=not-applicable fractionalOffset=%.4f,%.4f dpi=%u layer=0 shapeId=0 opIndex=%u opKind=%d opRect=%.3f,%.3f,%.3f,%.3f opTextRole=%u theme=%d activeShaderVersion=0.3",
+            stage?stage:L"unknown",static_cast<unsigned>(failure),exceptionType?exceptionType:L"unknown",
+            liquidCaptureCandidate?1u:0u,liquidCapturePresented?1u:0u,
+            fallback?L"fallback":L"active",static_cast<unsigned long long>(glassSceneSequence),width,height,
+            width*Scale(),height*Scale(),presentationOffsetX,presentationOffsetY,dpi,index,kind,x,y,w,h,textRole,liquidSettings.theme);
+        liquidglass::diagnostics::Log(L"render-surface-error",fields);
     }
     CompositionDrawingSurface Render(float width,float height,GDOp const* operations,unsigned count)
     {
@@ -1154,8 +1635,15 @@ struct Host : std::enable_shared_from_this<Host>
     }
     CompositionDrawingSurface RenderV2(float width,float height,GDOpV2 const* operations,unsigned count)
     {
-        if(!std::isfinite(width)||!std::isfinite(height)||width<=0||height<=0||width>4096||height>4096||count>4096||(!operations&&count))throw hresult_invalid_argument();
-        for(unsigned index=0;index<count;++index)ValidateV2(operations[index]);
+        if(!std::isfinite(width)||!std::isfinite(height)||width<=0||height<=0||width>4096||height>4096||count>4096||(!operations&&count))
+        {renderOpIndex=std::numeric_limits<uint32_t>::max();LogRenderV2Failure(L"validate-frame",E_INVALIDARG,L"hresult_error",width,height,operations,count);throw hresult_invalid_argument();}
+        for(unsigned index=0;index<count;++index)
+        {
+            renderOpIndex=index;
+            try{ValidateV2(operations[index]);}
+            catch(hresult_error const& error){LogRenderV2Failure(L"validate-v2",error.code(),L"hresult_error",width,height,operations,count);renderOpIndex=std::numeric_limits<uint32_t>::max();throw;}
+        }
+        renderOpIndex=std::numeric_limits<uint32_t>::max();
         for(int attempt=0;attempt<2;++attempt)
         {
             try
@@ -1163,15 +1651,22 @@ struct Host : std::enable_shared_from_this<Host>
                 if(ownedFaulted)throw hresult_error(E_ABORT);
                 if(!graphics){CreateGraphics();if(materialBackend==1)CreateGrain();}
                 auto surface=CreateSurface(int(std::ceil(width*Scale())),int(std::ceil(height*Scale())));
-                Draw(surface,float(dpi),[&](auto context){PaintV2(context,operations,count);});return surface;
+                Draw(surface,float(dpi),[&](auto context){PaintV2(context,operations,count);});
+                renderOpIndex=std::numeric_limits<uint32_t>::max();return surface;
             }
             catch(hresult_error const& error)
             {
+                LogRenderV2Failure(L"render-v2",error.code(),L"hresult_error",width,height,operations,count);
                 if(materialBackend==2){TripOwned(error.code());throw;}
                 if(attempt||!DeviceLost(error.code()))throw;
                 fallback=true;UpdateAccessibleGeometry();ApplyMaterial();CreateGraphics();CreateGrain();
                 fallback=false;UpdateAccessibleGeometry();ApplyMaterial();
                 PostMessageW(window,RecoveredMessage,0,0);
+            }
+            catch(...)
+            {
+                LogRenderV2Failure(L"render-v2",to_hresult(),L"unknown",width,height,operations,count);
+                throw;
             }
         }
         throw hresult_error(E_FAIL);
@@ -1210,6 +1705,7 @@ struct Host : std::enable_shared_from_this<Host>
         if(IsWindow(glassWindow)&&!DestroyWindow(glassWindow))recordWin32Failure();glassWindow=nullptr;
         attempt([&]{if(root)root.Children().RemoveAll();});
         attempt([&]{if(glassRoot)glassRoot.Children().RemoveAll();});
+        fallbackLayerPool.clear();fallbackLayers=nullptr;fallbackBlurL2=nullptr;fallbackBlurL3=nullptr;fallbackRimBrush=nullptr;
         ownedRenderer.reset();ownedSurface=nullptr;ownedBrush=nullptr;
         images.clear();grainSurface=nullptr;graphics=nullptr;
         opticalSurface=nullptr;opticalBrush=nullptr;opticalLight=nullptr;
@@ -1314,9 +1810,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
             if(!(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_TOPMOST))host->EnsureTopmost();
         {
             auto const& placement=*reinterpret_cast<WINDOWPOS*>(lp);
-            host->SyncGlassWindowBounds();
-            host->UpdateShadow((placement.flags&SWP_NOZORDER)==0);
-            host->UpdateLiquid();host->UpdateAccessibleGeometry();host->Emit(ContextEvent);break;
+            if(!host->deferFrameSurfaceUpdates){
+                // EndDeferWindowPos can dispatch while its two HWNDs are still
+                // being notified. Never overwrite the batch with old bounds.
+                host->SyncGlassWindowBounds();
+                host->UpdateShadow((placement.flags&SWP_NOZORDER)==0);
+                host->UpdateLiquid();
+            }
+            host->UpdateAccessibleGeometry();host->Emit(ContextEvent);break;
         }
         case WM_DPICHANGED:
         {auto rectangle=reinterpret_cast<RECT*>(lp);host->ApplyDpi(LOWORD(wp),rectangle->left,rectangle->top);return 0;}
@@ -1333,7 +1834,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         case WM_MOUSEMOVE:
         {
             if(!host->visible)return 0;
-            const float x=GET_X_LPARAM(lp)/host->Scale(),y=GET_Y_LPARAM(lp)/host->Scale();
+            const float x=(static_cast<float>(GET_X_LPARAM(lp))-host->presentationOffsetX)/host->Scale();
+            const float y=(static_cast<float>(GET_Y_LPARAM(lp))-host->presentationOffsetY)/host->Scale();
             const bool inside=host->Inside(x,y);
             if(inside&&!host->tracking){host->tracking=true;TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,hwnd,0};TrackMouseEvent(&track);host->EmitPointer(1,lp,inside);}
             else if(!inside&&host->tracking){host->tracking=false;host->EmitPointer(2,lp,inside);}
@@ -1343,14 +1845,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         case WM_LBUTTONDOWN:
         {
             if(!host->visible)return 0;
-            const bool inside=host->Inside(GET_X_LPARAM(lp)/host->Scale(),GET_Y_LPARAM(lp)/host->Scale());
+            const bool inside=host->Inside((static_cast<float>(GET_X_LPARAM(lp))-host->presentationOffsetX)/host->Scale(),
+                (static_cast<float>(GET_Y_LPARAM(lp))-host->presentationOffsetY)/host->Scale());
             if(!inside)return 0;
             host->captured=true;SetCapture(hwnd);host->EmitPointer(4,lp,inside);return 0;
         }
         case WM_LBUTTONUP:
         {
             if(!host->visible)return 0;
-            const bool inside=host->Inside(GET_X_LPARAM(lp)/host->Scale(),GET_Y_LPARAM(lp)/host->Scale());
+            const bool inside=host->Inside((static_cast<float>(GET_X_LPARAM(lp))-host->presentationOffsetX)/host->Scale(),
+                (static_cast<float>(GET_Y_LPARAM(lp))-host->presentationOffsetY)/host->Scale());
             host->EmitPointer(5,lp,inside);host->captured=false;if(GetCapture()==hwnd)ReleaseCapture();return 0;
         }
         case WM_CAPTURECHANGED:if(host->captured){host->captured=false;host->Emit(15);}return 0;
@@ -1358,7 +1862,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         {
             if(!host->visible)return 0;
             POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};ScreenToClient(hwnd,&point);
-            const float x=point.x/host->Scale(),y=point.y/host->Scale();
+            const float x=(static_cast<float>(point.x)-host->presentationOffsetX)/host->Scale();
+            const float y=(static_cast<float>(point.y)-host->presentationOffsetY)/host->Scale();
             const bool inside=host->Inside(x,y);
             const int control=inside?host->Hit(x,y):0;
             host->Emit(6,x,y,GET_X_LPARAM(lp),GET_Y_LPARAM(lp),input::ControlIdForSurface(inside,control),
@@ -1368,7 +1873,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         case WM_NCHITTEST:
         {
             POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};ScreenToClient(hwnd,&point);
-            return host->Inside(point.x/host->Scale(),point.y/host->Scale())?HTCLIENT:HTTRANSPARENT;
+            return host->Inside((static_cast<float>(point.x)-host->presentationOffsetX)/host->Scale(),
+                (static_cast<float>(point.y)-host->presentationOffsetY)/host->Scale())?HTCLIENT:HTTRANSPARENT;
         }
         case WM_GETOBJECT:
             if(!host->destroying&&static_cast<LONG>(lp)==UiaRootObjectId&&host->provider)return UiaReturnRawElementProvider(hwnd,wp,lp,host->provider.Get());break;
@@ -1433,6 +1939,10 @@ static HRESULT CreateHost(GDCallback callback,void* user,uint32_t backend,bool a
         auto window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP,gd::WindowClass,
             L"GlassDesk 音乐小组件",WS_POPUP,0,0,232,48,nullptr,nullptr,GetModuleHandleW(nullptr),host.get());
         check_bool(window!=nullptr);host->Initialize(window);
+        wchar_t fields[256]{};
+        swprintf_s(fields,std::size(fields),L"stage=native-start backend=%u captureCandidate=%u capturedPresented=0 materialState=waiting activeShaderVersion=0.3 fallbackReason=first-frame-pending pluginVersion=%ls",
+            backend,host->liquidCaptureCandidate?1u:0u,gd::liquidglass::diagnostics::kLiquidGlassPluginVersion);
+        gd::liquidglass::diagnostics::Log(L"native-start",fields);
         host->callback=callback;host->user=user;*hwnd=window;*context=new gd::HostRef(host);return S_OK;
     }catch(...){return to_hresult();}
 }
@@ -1451,7 +1961,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDCreateV2(GDCallback callbac
         if(!(options->sessionLow|options->sessionHigh))return E_ACCESSDENIED;
         wchar_t computer[MAX_COMPUTERNAME_LENGTH+1]{};DWORD count=MAX_COMPUTERNAME_LENGTH+1;
         if(!GetComputerNameW(computer,&count))return E_ACCESSDENIED;
-        bool incident=_wcsicmp(computer,L"SHENG-AWA")==0;
+        bool incident=_wcsicmp(computer,L"sheng")==0;
         if(incident!=(options->reserved==1))return E_ACCESSDENIED;
     }
     return CreateHost(callback,user,options->backend,options->reserved==1,context,hwnd);
@@ -1570,9 +2080,11 @@ static HRESULT ApplyFrameWithTension(void* context,GDFrame const* frame,float te
     if(!gd::ValidFrameRequest(*frame,tension))return E_INVALIDARG;
     try
     {
-        int width{},height{};check_hresult(gd::PhysicalFrameSize(*frame,host->dpi,false,width,height));
+        gd::FramePixelGeometry geometry{};
+        check_hresult(host->ComputeFramePixelGeometry(*frame,host->dpi,host->presentationOffsetX,host->presentationOffsetY,geometry));
         host->frame=*frame;host->surfaceTension=tension;
-        check_hresult(host->PositionHostWindows(0,0,width,height,SWP_NOMOVE));
+        host->glassSceneShapes.clear();host->glassSceneSequence=0;host->appliedGlassSceneSequence=0;
+        check_hresult(host->PositionHostWindows(0,0,geometry.allocationWidth,geometry.allocationHeight,SWP_NOMOVE));
         if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
         host->Layout();host->UpdateAccessibleGeometry();return host->ownedFaulted?E_ABORT:S_OK;
     }catch(...){auto failure=to_hresult();host->TripOwned(failure);try{host->UpdateAccessibleGeometry();}catch(...){}return failure;}
@@ -1582,8 +2094,37 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrame(void* context,GD
 {return ApplyFrameWithTension(context,frame,0);}
 extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyFrameWithTension(void* context,GDFrame const* frame,float tension)
 {return ApplyFrameWithTension(context,frame,tension);}
-extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyPositionedFrameWithTension(
-    void* context,GDFrame const* frame,float tension,int screenX,int screenY) noexcept
+static bool ValidGlassScene(GDGlassShapeV1 const* shapes,uint32_t count,uint32_t stride,
+    uint32_t structSize,uint32_t version,std::vector<GDGlassShapeV1>& snapshot) noexcept
+{
+    if(version!=1||structSize!=static_cast<uint32_t>(sizeof(GDGlassShapeV1))||
+        stride<structSize||stride>4096u||count>32||(!shapes&&count))return false;
+    try
+    {
+        snapshot.clear();snapshot.reserve(count);
+        auto const* bytes=reinterpret_cast<uint8_t const*>(shapes);
+        for(uint32_t index=0;index<count;++index)
+        {
+            GDGlassShapeV1 value{};
+            std::memcpy(&value,bytes+static_cast<size_t>(index)*stride,sizeof(value));
+            if(value.id==0||(value.layer!=2&&value.layer!=3)||value.enabled>1||
+                !std::isfinite(value.xDip)||!std::isfinite(value.yDip)||!std::isfinite(value.widthDip)||
+                !std::isfinite(value.heightDip)||!std::isfinite(value.radiusDip)||
+                !std::isfinite(value.materialize)||!std::isfinite(value.press)||
+                std::abs(value.xDip)>4096||std::abs(value.yDip)>4096||
+                value.widthDip<=0||value.heightDip<=0||value.widthDip>4096||value.heightDip>4096||
+                value.radiusDip<0||value.radiusDip>4096||value.materialize<0||value.materialize>1||
+                value.press<0||value.press>1)return false;
+            for(auto const& prior:snapshot)if(prior.id==value.id)return false;
+            snapshot.push_back(value);
+        }
+        return true;
+    }
+    catch(...){snapshot.clear();return false;}
+}
+
+static HRESULT ApplyContinuousSceneFrame(void* context,GDFrame const* frame,float tension,float screenX,float screenY,
+    uint64_t sequence,std::vector<GDGlassShapeV1>&& shapes) noexcept
 {
     gd::HostRef host;
     try
@@ -1592,21 +2133,36 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyPositionedFrameWithTen
         auto hr=host->CheckThread();if(FAILED(hr))return hr;
         if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
         if(!gd::ValidFrameRequest(*frame,tension))return E_INVALIDARG;
-
-        int width{},height{};
-        hr=gd::PhysicalFrameSize(*frame,host->dpi,false,width,height);
+        if(!std::isfinite(screenX)||!std::isfinite(screenY)||std::abs(double(screenX))>10000000||std::abs(double(screenY))>10000000)return E_INVALIDARG;
+        const bool continuous=host->liquidCaptureCandidate;
+        int targetX=continuous?int(std::floor(screenX)):int(std::lround(screenX));
+        int targetY=continuous?int(std::floor(screenY)):int(std::lround(screenY));
+        const float offsetX=continuous?screenX-static_cast<float>(targetX):0.0f;
+        const float offsetY=continuous?screenY-static_cast<float>(targetY):0.0f;
+        gd::FramePixelGeometry geometry{};
+        hr=host->ComputeFramePixelGeometry(*frame,host->dpi,offsetX,offsetY,geometry);
         if(FAILED(hr))return hr;
-        int targetX=screenX,targetY=screenY;
-if(int64_t(targetX)+width>std::numeric_limits<int>::max()||
+        const int width=geometry.allocationWidth,height=geometry.allocationHeight;
+        if(int64_t(targetX)+width>std::numeric_limits<int>::max()||
             int64_t(targetY)+height>std::numeric_limits<int>::max())return E_BOUNDS;
-
-        // Publish the new shape before SetWindowPos dispatches its synchronous
-        // messages. The combined rectangle is visible to WM_SIZE/layout as one
-        // candidate, and the WM_WINDOWPOSCHANGING clamp still
-        // protects any caller that supplies an edge-crossing placement.
+        const GDFrame oldFrame=host->frame;
+        const float oldTension=host->surfaceTension;
+        const float oldOffsetX=host->presentationOffsetX,oldOffsetY=host->presentationOffsetY;
+        std::vector<GDGlassShapeV1> oldShapes=std::move(host->glassSceneShapes);
+        const uint64_t oldSequence=host->glassSceneSequence,oldAppliedSequence=host->appliedGlassSceneSequence;
         host->frame=*frame;host->surfaceTension=tension;
+        host->presentationOffsetX=offsetX;host->presentationOffsetY=offsetY;
+        host->glassSceneShapes=std::move(shapes);host->glassSceneSequence=sequence;
+        host->appliedGlassSceneSequence=sequence;
         hr=host->PositionHostWindows(targetX,targetY,width,height,SWP_NOACTIVATE);
-        if(FAILED(hr)){host->TripOwned(hr);try{host->UpdateAccessibleGeometry();}catch(...){}return hr;}
+        if(FAILED(hr))
+        {
+            host->frame=oldFrame;host->surfaceTension=oldTension;
+            host->presentationOffsetX=oldOffsetX;host->presentationOffsetY=oldOffsetY;
+            host->glassSceneShapes=std::move(oldShapes);host->glassSceneSequence=oldSequence;
+            host->appliedGlassSceneSequence=oldAppliedSequence;
+            return hr;
+        }
         if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
         host->Layout();host->UpdateAccessibleGeometry();
         if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
@@ -1619,13 +2175,40 @@ if(int64_t(targetX)+width>std::numeric_limits<int>::max()||
         return failure;
     }
 }
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyContinuousPositionedFrameWithTension(
+    void* context,GDFrame const* frame,float tension,float screenX,float screenY) noexcept
+{
+    std::vector<GDGlassShapeV1> empty;
+    return ApplyContinuousSceneFrame(context,frame,tension,screenX,screenY,0,std::move(empty));
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplySceneFrameV1(void* context,
+    GDFrame const* frame,float tension,float screenX,float screenY,uint64_t sequence,
+    GDGlassShapeV1 const* shapes,uint32_t count,uint32_t stride,uint32_t structSize,uint32_t version) noexcept
+{
+    std::vector<GDGlassShapeV1> snapshot;
+    if(!ValidGlassScene(shapes,count,stride,structSize,version,snapshot))return E_INVALIDARG;
+    return ApplyContinuousSceneFrame(context,frame,tension,screenX,screenY,sequence,std::move(snapshot));
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDApplyPositionedFrameWithTension(
+    void* context,GDFrame const* frame,float tension,int screenX,int screenY) noexcept
+{return GDApplyContinuousPositionedFrameWithTension(context,frame,tension,float(screenX),float(screenY));}
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetPlacement(void* context,int x,int y)
 {
     auto host=gd::FromContext(context);if(!host)return E_POINTER;
     auto hr=host->CheckThread();if(FAILED(hr))return hr;
     if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
-    const HRESULT placement=host->PositionHostWindows(x,y,0,0,SWP_NOSIZE);
-    if(FAILED(placement)){host->TripOwned(placement);return placement;}
+    gd::FramePixelGeometry geometry{};
+    hr=host->ComputeFramePixelGeometry(host->frame,host->dpi,0.0f,0.0f,geometry);
+    if(FAILED(hr))return hr;
+    const float previousOffsetX=host->presentationOffsetX,previousOffsetY=host->presentationOffsetY;
+    host->presentationOffsetX=host->presentationOffsetY=0.0f;
+    const HRESULT placement=host->PositionHostWindows(x,y,geometry.allocationWidth,geometry.allocationHeight,SWP_NOACTIVATE);
+    if(FAILED(placement)){
+        host->presentationOffsetX=previousOffsetX;host->presentationOffsetY=previousOffsetY;
+        host->TripOwned(placement);return placement;
+    }
+    try{host->Layout();host->UpdateAccessibleGeometry();}
+    catch(...){const HRESULT failure=to_hresult();host->TripOwned(failure);return failure;}
     return host->ownedFaulted?E_ABORT:S_OK;
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetVisible(void* context,int visible)
@@ -1654,12 +2237,36 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDSetVisible(void* context,in
         return S_OK;
     }catch(...){auto failure=to_hresult();host->TripOwned(failure);return failure;}
 }
+extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassMotionActive(void* context,int active)
+{
+    auto host=gd::FromContext(context);if(!host)return E_POINTER;
+    auto result=host->CheckThread();if(FAILED(result))return result;
+    host->captureMotionActive=active!=0;
+    return S_OK;
+}
 extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassEnabled(void* context,int enabled)
 {
     auto host=gd::FromContext(context);if(!host)return E_POINTER;
     auto hr=host->CheckThread();if(FAILED(hr))return hr;
     if(host->ownedFaulted&&(host->materialBackend==2||false))return E_ABORT;
     try{host->liquidEnabled=enabled!=0;host->Layout();host->UpdateAccessibleGeometry();return S_OK;}catch(...){auto failure=to_hresult();host->TripOwned(failure);try{host->UpdateAccessibleGeometry();}catch(...){}return failure;}
+}
+extern "C" __declspec(dllexport) HRESULT __stdcall GDSetLiquidGlassSettings(void* context,GDLiquidGlassSettings const* settings)
+{
+    auto host=gd::FromContext(context);if(!host||!settings)return E_POINTER;
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(!host->liquidCaptureCandidate)return E_ACCESSDENIED;
+    if(settings->size!=sizeof(GDLiquidGlassSettings)||settings->version!=1)return E_INVALIDARG;
+    try
+    {
+        host->liquidSettings=*settings;
+        if(host->liquidCapture)check_hresult(host->liquidCapture->SetSettings(host->liquidSettings));
+        host->shadowMaterialScale=-1.0f;host->shadowThemeWeight=-1.0f;
+        host->UpdateShadow();
+        host->UpdateLiquidCapture();
+        return S_OK;
+    }
+    catch(...){return to_hresult();}
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall GDUpdateLiquidGlassCapture(void* context)
 {
@@ -1714,15 +2321,23 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassStatus(void* 
             L"Fallback: solid; wallpaper candidate unavailable or outside capsule/peek";
         else if(host->liquidCaptureCandidate)
         {
-            if(!host->liquidEnabled)status=L"Disabled: liquid glass capture";
+            if(!host->liquidEnabled)status=L"DisabledByUser: liquid glass capture";
+            else if(host->frame.solid)status=L"SolidByAccessibility: solid material requested";
+            else if(host->liquidCaptureFuseTripped)status=L"FaultedSafety: liquid glass capture fuse tripped; system frost";
             else if(!host->visible)status=L"Paused: liquid glass capture; host hidden";
-            else if(host->liquidCaptureFuseTripped)status=L"Fallback: liquid glass capture fuse tripped; system frost";
+            else if(host->liquidCaptureGeometryRetrying)
+            {
+                const ULONGLONG elapsed=host->liquidCaptureRetryStartedMs?GetTickCount64()-host->liquidCaptureRetryStartedMs:0;
+                wchar_t detail[48]{};swprintf_s(detail,std::size(detail),L" %llums",static_cast<unsigned long long>(elapsed));
+                status=L"RetryingGeometry:";status+=detail;
+            }
+            else if(host->liquidCaptureSurfaceRetrying)status=L"RetryingSurface: preserving the last attached frame";
             else if(FAILED(host->liquidCaptureFailure))
             {
                 wchar_t detail[9]{};swprintf_s(detail,L"%08X",static_cast<unsigned>(host->liquidCaptureFailure));
                 status=L"Fallback: liquid glass capture failed; HRESULT 0x";status+=detail;status+=L"; system frost";
             }
-            else status=host->liquidCapturePresented?L"Active: liquid glass capture":L"Starting: liquid glass capture";
+            else status=host->liquidCapturePresented?L"Active: liquid glass capture":L"WaitingFirstFrame: liquid glass capture";
         }
         else if(host->materialBackend==0)status=L"Fallback: solid backend; no capture";
         else status=!host->liquidEnabled?L"Disabled: system frost; no desktop capture":
@@ -1730,6 +2345,9 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDGetLiquidGlassStatus(void* 
             host->frame.solid||host->fallback?L"Fallback: solid/system policy; no desktop capture":
             host->opticalReady?L"Active: system frost + procedural curved light; no desktop capture":
             L"Fallback: system frost; optical shader unavailable; no desktop capture";
+        std::wstring prefix=L"Liquid Glass plugin ";prefix+=gd::liquidglass::diagnostics::kLiquidGlassPluginVersion;
+        prefix+=L" · shader ";prefix+=gd::liquidglass::diagnostics::kLiquidGlassShaderVersion;prefix+=L" · ";prefix+=status;
+        status=std::move(prefix);
         if(status.size()+1>capacity)return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
         wcscpy_s(text,capacity,status.c_str());return S_OK;
     }catch(...){return to_hresult();}
@@ -1841,6 +2459,12 @@ extern "C" __declspec(dllexport) HRESULT __stdcall GDMeasureTextInkBoundsV2(void
 extern "C" __declspec(dllexport) HRESULT __stdcall GDRenderSurfaceV2(void* context,float width,float height,GDOpV2 const* operations,uint32_t count,uint32_t stride,::IInspectable** surface)
 {
     if(!surface)return E_POINTER;*surface=nullptr;auto host=gd::FromContext(context);if(!host)return E_POINTER;
-    auto hr=host->CheckThread();if(FAILED(hr))return hr;if(stride!=sizeof(GDOpV2))return E_INVALIDARG;
-    try{auto value=host->RenderV2(width,height,operations,count);*surface=static_cast<::IInspectable*>(detach_abi(value));return S_OK;}catch(...){return to_hresult();}
+    auto hr=host->CheckThread();if(FAILED(hr))return hr;
+    if(stride!=sizeof(GDOpV2))
+    {host->renderOpIndex=std::numeric_limits<uint32_t>::max();host->LogRenderV2Failure(L"validate-stride",E_INVALIDARG,L"abi-error",width,height,operations,count);return E_INVALIDARG;}
+    try{auto value=host->RenderV2(width,height,operations,count);*surface=static_cast<::IInspectable*>(detach_abi(value));return S_OK;}
+    catch(hresult_error const& error)
+    {host->LogRenderV2Failure(L"GDRenderSurfaceV2-return",error.code(),L"hresult_error",width,height,operations,count);return error.code();}
+    catch(...)
+    {hr=to_hresult();host->LogRenderV2Failure(L"GDRenderSurfaceV2-return",hr,L"unknown",width,height,operations,count);return hr;}
 }

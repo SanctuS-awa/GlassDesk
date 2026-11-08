@@ -7,35 +7,34 @@ public readonly record struct WidgetPose(float X, float Y, float Width, float He
     internal static WidgetPose From(double[] v)=>new((float)v[0],(float)v[1],Math.Max(1,(float)v[2]),Math.Max(1,(float)v[3]),Math.Max(0,(float)v[4]),Math.Clamp((float)v[5],0,1)){SurfaceTension=Math.Clamp((float)v[6],-1.15f,1.15f)};
 }
 
-/// <summary>Interruptible critically damped motion, evaluated with a monotonic clock.</summary>
+/// <summary>Interruptible underdamped spring motion, evaluated with a monotonic clock.</summary>
 public sealed class MotionController(WidgetPose initial)
 {
     private WidgetPose start=initial;
     private double[] velocity=new double[7];
-    private double started, ends, omega, tensionKick;
+    private double started, ends, tensionKick;
+    private SpringTuning segmentTuning = SpringTuning.Default;
+    private Func<WidgetPose, WidgetPose>? poseConstraint;
+    public SpringTuning Tuning {get;set;} = SpringTuning.Default;
     public WidgetPose Target {get;private set;}=initial;
     public WidgetPose Current {get;private set;}=initial;
     public bool Active {get;private set;}
 
+    internal void SetPoseConstraint(Func<WidgetPose, WidgetPose> constraint)
+        => poseConstraint = constraint ?? throw new ArgumentNullException(nameof(constraint));
+
+    private WidgetPose Constrain(WidgetPose pose) => poseConstraint?.Invoke(pose) ?? pose;
+
     private (WidgetPose Pose,double[] Velocity) Evaluate(double now)
     {
-        if (!Active || now>=ends) return (Target,new double[7]);
+        if (!Active || now>=ends) return (Constrain(Target),new double[7]);
         var a=start.Values; var b=Target.Values; var result=new double[7]; var speed=new double[7];
-        double t=Math.Max(0,(now-started)/1000), decay=Math.Exp(-omega*t);
+        double t=Math.Max(0,(now-started)/1000);
         double duration=(ends-started)/1000, u=Math.Clamp(t/duration,0,1), v=1-u;
-        double endDecay=Math.Exp(-omega*duration);
-        double endPositionBlend=u*u*(3-2*u), endVelocityBlend=u*u*(u-1);
-        double endPositionSlope=6*u*(1-u)/duration, endVelocitySlope=u*(3*u-2);
         for(int i=0;i<6;i++)
         {
-            double offset=a[i]-b[i], c=velocity[i]+omega*offset;
-            // A truncated spring still has residual displacement and speed.
-            // Remove just that residual with a C1 Hermite correction: the
-            // start pose/velocity survive, and the deadline reaches exact rest.
-            double endOffset=(offset+c*duration)*endDecay;
-            double endSpeed=(velocity[i]-omega*c*duration)*endDecay;
-            result[i]=b[i]+(offset+c*t)*decay-endOffset*endPositionBlend-duration*endSpeed*endVelocityBlend;
-            speed[i]=(velocity[i]-omega*c*t)*decay-endOffset*endPositionSlope-endSpeed*endVelocitySlope;
+            var sample = SpringPhysics.Sample(a[i], b[i], velocity[i], t, duration, segmentTuning);
+            result[i] = sample.Position; speed[i] = sample.Velocity;
         }
         // A finite strain impulse, separate from content/size. C1 continuity
         // survives reversals; both displacement and velocity end exactly at zero.
@@ -44,7 +43,7 @@ public sealed class MotionController(WidgetPose initial)
             -Math.PI*u*u*v*v*v*Math.Sin(Math.PI*u));
         result[6]=(2*u*u*u-3*u*u+1)*a[6]+(u*u*u-2*u*u+u)*duration*velocity[6]+tensionKick*envelope;
         speed[6]=((6*u*u-6*u)*a[6]+(3*u*u-4*u+1)*duration*velocity[6]+tensionKick*derivative)/duration;
-        return (WidgetPose.From(result),speed);
+        return (Constrain(WidgetPose.From(result)),speed);
     }
     public WidgetPose Sample(double now)
     {
@@ -59,7 +58,7 @@ public sealed class MotionController(WidgetPose initial)
         var current=Evaluate(now);
         start=current.Pose; Current=start; velocity=current.Velocity;
         tensionKick=TensionKickFor(start,target);
-        Target=target with {SurfaceTension=0}; started=now; ends=now+durationMs; omega=8.0/(durationMs/1000.0);
+        Target=target with {SurfaceTension=0}; started=now; ends=now+durationMs; segmentTuning=Tuning;
         Active=start!=target || velocity.Any(v=>Math.Abs(v)>.001);
     }
     public void Jump(WidgetPose pose)

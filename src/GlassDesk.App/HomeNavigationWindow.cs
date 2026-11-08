@@ -19,7 +19,7 @@ using VirtualKey = Windows.System.VirtualKey;
 namespace GlassDesk.App;
 
 /// <summary>
-/// A compact, owned WinUI Dock-like side navigation for the Home music route.
+/// A compact, owned WinUI Dock-like side navigation for the Home route.
 /// A first user request activates the XAML window so its content is initialized;
 /// subsequent displays reuse it without activation. Escape follows the XAML key route.
 /// </summary>
@@ -43,8 +43,8 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
         VerticalAlignment = VerticalAlignment.Center
     };
     readonly Button[] _entryButtons = new Button[5];
-    readonly Button _music;
-    readonly Action _selectMusic;
+    readonly Button _home;
+    readonly Action _selectHome;
     readonly Action<HomeNavigationWindow> _dismiss;
     readonly Action<HomeNavigationWindow> _closed;
     bool _visible, _hasLoaded, _isClosed, _closing, _disposed;
@@ -57,11 +57,11 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
         ? new(bounds.X, bounds.Y, bounds.Width, bounds.Height) : null;
     public float ScreenCornerRadius => 18 * _lastScale;
 
-    public HomeNavigationWindow(nint owner, Action selectMusic, Action<HomeNavigationWindow> dismiss,
+    public HomeNavigationWindow(nint owner, Action selectHome, Action<HomeNavigationWindow> dismiss,
         Action<HomeNavigationWindow> closed)
     {
         _owner = owner;
-        _selectMusic = selectMusic;
+        _selectHome = selectHome;
         _dismiss = dismiss;
         _closed = closed;
         Handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
@@ -80,7 +80,7 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
 
         var destinations = new (string Name, string Glyph, bool Enabled)[]
         {
-            ("音乐", "\uE8D6", true),
+            ("首页", "\uE80F", true),
             ("本地音乐", "\uE8D6", false),
             ("歌单", "\uE8FD", false),
             ("收藏", "\uE734", false),
@@ -93,14 +93,14 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
             _entryButtons[i] = entry;
             _entries.Children.Add(entry);
         }
-        _music = _entryButtons[0];
-        AutomationProperties.SetName(_music, "音乐");
-        AutomationProperties.SetHelpText(_music, "打开音乐详情页并关闭导航侧栏。");
-        _music.Click += OnMusicClick;
-        _music.KeyDown += OnKeyDown;
+        _home = _entryButtons[0];
+        AutomationProperties.SetName(_home, "首页");
+        AutomationProperties.SetHelpText(_home, "返回首页并关闭导航侧栏。");
+        _home.Click += OnHomeClick;
+        _home.KeyDown += OnKeyDown;
         _root.Children.Add(_entries);
         AutomationProperties.SetName(_root, "Dock 式导航");
-        AutomationProperties.SetHelpText(_root, "当前仅音乐可用，其余项目暂不可用。");
+        AutomationProperties.SetHelpText(_root, "当前仅首页可用，其余项目暂不可用。");
         _root.KeyDown += OnKeyDown;
         _root.PointerPressed += OnRootPointerPressed;
         _root.Loaded += OnLoaded;
@@ -232,9 +232,9 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
         DependencyObject? source = args.OriginalSource as DependencyObject;
         while (source is not null)
         {
-            if (ReferenceEquals(source, _music))
+            if (ReferenceEquals(source, _home))
             {
-                _music.Focus(FocusState.Pointer);
+                _home.Focus(FocusState.Pointer);
                 return;
             }
             source = VisualTreeHelper.GetParent(source);
@@ -255,10 +255,10 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
         Close();
     }
 
-    void OnMusicClick(object sender, RoutedEventArgs args)
+    void OnHomeClick(object sender, RoutedEventArgs args)
     {
         if (_isClosed) return;
-        _selectMusic();
+        _selectHome();
         if (_visible) Close();
     }
 
@@ -267,8 +267,8 @@ internal sealed class HomeNavigationWindow : Window, IDisposable
         if (_isClosed) return;
         _isClosed = true;
         _visible = false;
-        _music.Click -= OnMusicClick;
-        _music.KeyDown -= OnKeyDown;
+        _home.Click -= OnHomeClick;
+        _home.KeyDown -= OnKeyDown;
         _root.KeyDown -= OnKeyDown;
         _root.PointerPressed -= OnRootPointerPressed;
         _root.Loaded -= OnLoaded;

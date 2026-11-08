@@ -11,7 +11,7 @@ namespace GlassDesk.App;
 /// <summary>
 /// Details chrome: the top companion home handle (return to the time capsule) and a
 /// legacy bottom five-destination dock, retained internally but hidden by the current
-/// Home and Music navigation. All foreground content is a small set of
+/// Home and Widgets navigation. All foreground content is a small set of
 /// cached pixel surfaces; they are redrawn only when selection, hover, high contrast or
 /// DPI changes. Motion is pure composition (no per-frame tick) except the transient
 /// preview highlight, which returns to the real page after a short deadline.
@@ -26,6 +26,7 @@ internal sealed class DetailsChromeVisual : IDisposable
 
     readonly NativeWidgetHost _host;
     readonly Compositor _compositor;
+    readonly CompositionSpring _spring;
     readonly AccessibilitySettings _accessibility = new();
     readonly UISettings _uiSettings = new();
 
@@ -73,8 +74,8 @@ internal sealed class DetailsChromeVisual : IDisposable
     (bool HighContrast, uint Dpi, float Width, string Text)? _dockLabelKey;
     bool? _dockLabelShown;
 
-    string _pageId = DetailsPageController.Music;
-    int _selectedIndex = DetailsDockItems.Music;
+    string _pageId = DetailsPageController.Home;
+    int _selectedIndex = DetailsDockItems.Home;
     int _previewIndex = -1;
     double _previewUntil;
     int _hoverIndex = -1;
@@ -84,7 +85,7 @@ internal sealed class DetailsChromeVisual : IDisposable
     // The current Home Dock replaces the legacy five-slot dock. Keep all of its routes
     // hidden from rendering, hit-testing, and accessibility.
     bool _dockVisible = true;
-    uint _homeColor = 0xff202329;
+    uint _homeColor = 0xff202329u;
     int _pressedIndex = -1;
     float _width = 360, _height = 476;
     bool _suppressSelectionAnimation;
@@ -93,7 +94,7 @@ internal sealed class DetailsChromeVisual : IDisposable
     uint _paletteHomeColor;
 
     public ContainerVisual Visual => _visual;
-    public bool NeedsTick => _previewIndex >= 0;
+    public bool NeedsTick => _previewIndex >= 0 || _spring.Active;
     public event Action<string>? PageRequested;
     public FloatRect HomeBounds => DetailsChromeLayout.Home(Size);
     public FloatRect DockBounds => DetailsChromeLayout.Dock(Size);
@@ -105,7 +106,7 @@ internal sealed class DetailsChromeVisual : IDisposable
     public DetailsChromeVisual(NativeWidgetHost host)
     {
         _host = host;
-        _compositor = host.Compositor;
+        _compositor = host.Compositor; _spring = new(_compositor);
         _visual = _compositor.CreateContainerVisual();
         _visual.Size = Size;
         _visual.Opacity = 0;
@@ -208,26 +209,27 @@ internal sealed class DetailsChromeVisual : IDisposable
         _selectedIndex = DetailsDockItems.IndexOf(_pageId);
         _hoverHome = false; _hoverIndex = -1; _previewIndex = -1;
         _pressedHome = false; _pressedIndex = -1; _press.Opacity = 0;
-        _homeGroup.StopAnimation("Scale"); _homeGroup.Scale = Vector3.One;
-        _dockActive.StopAnimation("Scale"); _dockActive.Scale = Vector3.One;
+        _spring.Scale(_homeGroup, Vector3.One, Reduced, 220);
+        _spring.Scale(_dockActive, Vector3.One, Reduced, 220);
         _dockActive.StopAnimation("Offset.X");
         _suppressSelectionAnimation = true;
         Present();
         _suppressSelectionAnimation = false;
     }
 
-    public void Close()
+    public void Close(bool retainPresentation = false)
     {
         if (_disposed) return;
         _active = false; _hoverHome = false; _hoverIndex = -1; _previewIndex = -1;
         SetHomeGaze(0, 0, false);
         _pressedHome = false; _pressedIndex = -1;
-        _homeLabel.StopAnimation("Opacity"); _homeLabel.Opacity = 0; _homeLabelShown = null;
-        _dockLabel.StopAnimation("Opacity"); _dockLabel.Opacity = 0; _dockLabelShown = null;
-        _dockActive.StopAnimation("Offset.X"); _dockActive.StopAnimation("Scale"); _dockActive.Scale = Vector3.One;
-        _homeGroup.StopAnimation("Scale"); _homeGroup.Scale = Vector3.One;
+        _homeLabelShown = _dockLabelShown = null;
+        _spring.Scalar(_homeLabel, "Opacity", 0, Reduced, 100);
+        _spring.Scalar(_dockLabel, "Opacity", 0, Reduced, 100);
+        _spring.Scale(_dockActive, Vector3.One, Reduced, 220);
+        _spring.Scale(_homeGroup, Vector3.One, Reduced, 220);
         _press.Opacity = 0;
-        _visual.Opacity = 0;
+        if (!retainPresentation) _visual.Opacity = 0;
     }
 
     public void SetReducedMotion(bool reducedMotion, double now)
@@ -239,6 +241,7 @@ internal sealed class DetailsChromeVisual : IDisposable
         _reducedMotion = reduced;
         if (reduced)
         {
+            _spring.Dispose();
             SetHomeGaze(0, 0, false);
             _dockActive.StopAnimation("Offset.X");
             _dockActive.StopAnimation("Scale");
@@ -672,34 +675,12 @@ internal sealed class DetailsChromeVisual : IDisposable
         if (shown == visible) return;
         shown = visible;
         float target = visible ? 1 : 0;
-        if (Reduced)
-        {
-            visual.StopAnimation("Opacity");
-            visual.Opacity = target;
-            return;
-        }
-        using var easing = _compositor.CreateCubicBezierEasingFunction(new(.2f, 0), new(0, 1));
-        using var animation = _compositor.CreateScalarKeyFrameAnimation();
-        animation.InsertExpressionKeyFrame(0, "this.StartingValue");
-        animation.InsertKeyFrame(1, target, easing);
-        animation.Duration = TimeSpan.FromMilliseconds(HoverDurationMs);
-        visual.StartAnimation("Opacity", animation);
+        _spring.Scalar(visual, "Opacity", target, Reduced, (int)HoverDurationMs);
     }
 
     void AnimateScale(Visual visual, float target, double durationMs)
     {
-        if (Reduced)
-        {
-            visual.StopAnimation("Scale");
-            visual.Scale = new(target, target, 1);
-            return;
-        }
-        using var easing = _compositor.CreateCubicBezierEasingFunction(new(.2f, 0), new(0, 1));
-        using var animation = _compositor.CreateVector3KeyFrameAnimation();
-        animation.InsertExpressionKeyFrame(0, "this.StartingValue");
-        animation.InsertKeyFrame(1, new Vector3(target, target, 1), easing);
-        animation.Duration = TimeSpan.FromMilliseconds(durationMs);
-        visual.StartAnimation("Scale", animation);
+        _spring.Scale(visual, new(target, target, 1), Reduced, (int)Math.Max(durationMs, 220));
     }
 
     float LabelWidth(string text) =>
@@ -707,19 +688,19 @@ internal sealed class DetailsChromeVisual : IDisposable
 
     float MeasureTextWidth(string text, TextRole role)
     {
-        var operation = SurfaceOp.Typography(text, role, 0, 0, 512, 20, 0xFF000000, false, null, Locale);
+        var operation = SurfaceOp.Typography(text, role, 0, 0, 512, 20, 0xFF000000u, false, null, Locale);
         return _host.MeasureText(operation).Advance;
     }
 
     uint LabelFill(bool highContrast) =>
-        highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.Window)) : 0xFFF8FAFC;
+        highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.Window)) : 0xFFF8FAFCu;
 
     uint LabelInk(bool highContrast) =>
-        highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.WindowText)) : 0xFF20252C;
+        highContrast ? Argb(_uiSettings.UIElementColor(UIElementType.WindowText)) : 0xFF20252Cu;
 
     static string GlyphFor(string id) => id switch
     {
-        "music" => "\uE8D6",
+        "home" or "music" => "\uE80F",
         "widgets" => "\uE71D",
         "clock" => "\uE917",
         "focus" => "\uE916",
@@ -776,6 +757,7 @@ internal sealed class DetailsChromeVisual : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _spring.Dispose();
         _adaptiveDockInk?.Dispose();_adaptiveDockInk=null;
         PageRequested = null;
         _visual.Children.RemoveAll();

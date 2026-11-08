@@ -75,13 +75,23 @@ internal sealed partial class GlassDeskCoordinator
         float width=Math.Clamp(controller.Monitor.WorkArea.Width/controller.Monitor.Scale,64,360);
         var presented=WidgetBoardData.TimeOnlyForPresentation(state);
         // The widget page follows its content; the dock inset is included so cards stay clear.
-        // The Home page uses the reviewed 360x512 canvas; the music page follows media.
-        float? height=pages.CurrentPageId==DetailsPageController.Home
-            ?Math.Clamp(HomeLayout.Height,WidgetScene.MinimumBoardPageHeight,512)
+        // Home uses a wide dashboard; the music page follows media.
+        float workAreaWidth=Math.Max(64,controller.Monitor.WorkArea.Width/controller.Monitor.Scale);
+        float workAreaHeight=Math.Max(160,controller.Monitor.WorkArea.Height/controller.Monitor.Scale);
+        if(host.IsExperimentalDesktopMaterialCandidate)
+        {
+            float safeDip=MathF.BitDecrement(1024f/controller.Monitor.Scale);
+            workAreaWidth=Math.Min(workAreaWidth,safeDip);
+            workAreaHeight=Math.Min(workAreaHeight,safeDip);
+        }
+        bool home=pages.CurrentPageId==DetailsPageController.Home;
+        float homeWidth=Math.Min(HomeLayout.DashboardWidth,workAreaWidth);
+        float? height=home
+            ?Math.Max(160,Math.Min(HomeLayout.Height,workAreaHeight))
             :pages.CurrentPageId==DetailsPageController.Widgets
             ?Math.Clamp(WidgetBoardLayout.Pack(presented,width).ContentBottom + WidgetBoardLayout.BottomInset,
                 WidgetScene.MinimumBoardPageHeight,512):null;
-        controller.SetDetailsPageHeight(height,Now);
+        controller.SetDetailsPageSize(home?homeWidth:null,height,Now);
         if(CandidateGraphicsStopped)return;
         scene.SetWidgetBoard(pages.CurrentPageId,state,widgetScheduler.Results,boardRevision,boardEditor.IsEditing,boardAddMenu,pages.ScrollOffset);
     }
@@ -434,7 +444,7 @@ internal sealed partial class GlassDeskCoordinator
                 scene.SetHomeNavExpanded(!scene.HomeNavExpanded);
                 break;
             case HomeActionKind.NavDestination:
-                if(action.Index==0)SelectMusicFromHomeNavigation();
+                if(action.Index==0)SelectHomeFromHomeNavigation();
                 return;
             case HomeActionKind.Folder: ShowHomeFolder(action.Index);return;
             case HomeActionKind.Preview:
@@ -454,6 +464,12 @@ internal sealed partial class GlassDeskCoordinator
                 break;
             }
             case HomeActionKind.ClosePopover: CancelHomeFolderRead();scene.CloseHomePopover();break;
+            case HomeActionKind.Mute: ToggleHomeMuteAsync();return;
+            case HomeActionKind.CalendarMonth: scene.ChangeHomeCalendarMonth(action.Index);break;
+            case HomeActionKind.Media:
+                if(action.Index==3){OpenMusic();return;}
+                InvokeAction(action.Index switch { 0=>WidgetActions.Previous, 1=>WidgetActions.Toggle, _=>WidgetActions.Next });
+                return;
         }
         Render();WakeMotion();Changed?.Invoke();
     }
@@ -465,6 +481,12 @@ internal sealed partial class GlassDeskCoordinator
     async void ShowHomeFolder(int index)
     {
         if(disposed||quitting||CandidateGraphicsStopped)return;
+        if(!scene.HomeFolderPreviewAvailable)
+        {
+            string desktop=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            if(system.OpenExplorer(desktop,false,out var directOpenError))notice=null;else notice=directOpenError;
+            Render();Changed?.Invoke();return;
+        }
         scene.SetHomeNavExpanded(false);CloseHomeNavigationWindow();
         if(scene.HomePopoverOpen&&scene.HomePopoverFolder==index)
         {CancelHomeFolderRead();scene.CloseHomePopover();Render();return;}
@@ -581,7 +603,7 @@ internal sealed partial class GlassDeskCoordinator
         HomeNavigationWindow? child=null;
         try
         {
-            child=new(host.Handle,SelectMusicFromHomeNavigation,OnHomeNavigationDismissed,OnHomeNavigationClosed);
+            child=new(host.Handle,SelectHomeFromHomeNavigation,OnHomeNavigationDismissed,OnHomeNavigationClosed);
             homeNavigation=child;
             TrackWidgetOwnedWindow(child.Handle,true);
             child.ShowWithoutActivation();
@@ -600,12 +622,12 @@ internal sealed partial class GlassDeskCoordinator
             Render();
         }
     }
-    void SelectMusicFromHomeNavigation()
+    void SelectHomeFromHomeNavigation()
     {
         if(disposed||quitting||CandidateGraphicsStopped||controller.Form!=WidgetForm.Details||!scene.HomePage)return;
         scene.SetHomeNavExpanded(false);
         CloseHomeNavigationWindow();
-        SelectDetailsPage(DetailsPageController.Music);
+        Render();WakeMotion();Changed?.Invoke();
     }
     void OnHomeNavigationDismissed(HomeNavigationWindow child)
     {

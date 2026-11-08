@@ -1,67 +1,94 @@
 <div align="center">
 
-<img src="docs/images/logo.png" alt="GlassDesk" width="80">
+<img src="docs/images/logo.png" alt="GlassDesk 标志" width="80">
 
 # GlassDesk
 
 **时间，音乐。还有一点陪伴。**
 
-Windows 11 桌面上的悬浮小伙伴 · 0.1
+Windows 11 桌面上的液态玻璃小组件 · 0.2.1.3 beta
 
-[下载安装包](https://github.com/Sheng-awa/GlassDesk/releases/download/v0.1.0/GlassDesk-0.1.0-win-x64-setup.exe) · [打开交互网页](https://sheng-awa.github.io/GlassDesk/) · [反馈问题](https://github.com/Sheng-awa/GlassDesk/issues)
+[下载安装包](https://github.com/SanctuS-awa/GlassDesk/releases) · [打开液态玻璃展示页](https://sanctus-awa.github.io/GlassDesk/) · [反馈问题](https://github.com/SanctuS-awa/GlassDesk/issues)
 
 <picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/peek.png">
-  <img src="docs/images/peek.gif" alt="GlassDesk 音乐小展开交互演示：陪伴球轻轻眨眼，右侧显示时间，下方保留封面与播放控制" width="560">
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/liquid-morph.png">
+  <img src="docs/images/liquid-morph.gif" alt="液态玻璃组件从时间胶囊连续展开为首页，折射边缘随尺寸增厚" width="720">
 </picture>
 
-<sub>小展开交互演示。网页和动图使用演示曲目，实际应用显示播放器提供的歌曲与封面。</sub>
+<sub>展示页中的曲目、天气与状态均为虚构演示数据；页面不会连接本机或控制播放器。</sub>
 
 </div>
 
-GlassDesk 把常看的时间、随手可控的音乐，和一双会回应你的眼睛，放在桌面的一角。需要时轻轻展开，不需要时安静收起。
+GlassDesk 把时间、音乐控制和会看向你的陪伴球放在桌面一角。液态玻璃是可选插件，启用后会通过 GPU 捕获桌面背景并实时折射；普通磨砂材质仍可单独使用。
 
-- **一点陪伴**：陪伴球看向鼠标、自然眨眼，用表情回应你的操作。
-- **听歌顺手**：查看网易云音乐的歌曲与封面，切歌、播放或暂停，少切一次窗口。
-- **抬眼看时间**：选择喜欢的数字字体；暂停一会儿，收起的胶囊会把位置还给时间。
+## 主要功能
 
-想先看看手感？[打开白底交互展示页](https://sheng-awa.github.io/GlassDesk/)，移动鼠标、点击陪伴球，也可以试试演示播放按钮。网页不会播放声音或控制本机播放器。
+- **液态玻璃**：GPU 实时采样桌面背景，使用圆角透镜 SDF、厚边缘折射和 R/B 色散。胶囊、小展开与大展开的折射带随形状短边增加；卡片叠在面板上时继续模糊下层，深色主题使用较轻的材质色调。该插件默认关闭。
+- **陪伴球**：眼睛跟随鼠标并会眨眼；可在设置中调整外观、颜色和跟随行为。
+- **音乐控制**：读取网易云音乐提供的 Windows 系统媒体会话（SMTC），显示歌曲与封面，并按来源能力提供上一首、播放/暂停和下一首。网页演示不会连接或控制音乐。
+- **首页**：天气卡、日历、纵向音乐卡、Wi‑Fi/电池状态栏、系统音量条与 Dock。天气尚未接入实时服务；Wi‑Fi、电池或主音量数据不可用时，相关位置会显示未知或禁用状态。
+
+## 液态玻璃
+
+![大展开在彩色线条与色块背景上移动，卡片呈现厚边缘折射和叠层模糊](docs/images/liquid-drag.gif)
+
+原生材质使用 Windows Graphics Capture 在 GPU 上采样桌面纹理，再由 D3D11 着色器对圆角矩形边缘做透镜折射。折射带宽度由组件短边连续计算，因此从胶囊展开到首页时，玻璃边缘会逐渐变厚。色散让红、蓝采样在边缘分开，卡片层则对下层内容再次做高斯模糊。折射模型受 [Glasswork](https://github.com/kubai087/glasswork)（MIT）启发；项目第三方组件声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+下表按网页展示尺寸和 DPI 1 计算；原生渲染会按实际窗口尺寸和 DPI 换算。
+
+| 形态 | 展示尺寸 | 折射带 B | 位移上限 D |
+| --- | ---: | ---: | ---: |
+| 胶囊 | 200 × 48 DIP | 约 14 DIP | 约 6 DIP |
+| 小展开 | 320 × 120 DIP | 约 34 DIP | 约 13 DIP |
+| 大展开首页 | 960 × 512 DIP | 约 56 DIP | 约 22 DIP |
+
+## 小展开
+
+![小展开中的陪伴球、虚构曲目和播放控制](docs/images/liquid-peek.gif)
+
+悬停胶囊可查看陪伴球、时间、封面、曲名与媒体按钮；点击组件可展开首页，也可以拖动组件观察背景如何经过玻璃边缘。展示页中的播放按钮只改变图标，不播放声音。
 
 ## 安装与使用
 
-1. 从 [0.1 首次发布](https://github.com/Sheng-awa/GlassDesk/releases/tag/v0.1.0) 下载 **GlassDesk-0.1.0-win-x64-setup.exe**，运行安装。
-2. 从开始菜单打开 GlassDesk；首次启动会打开设置。
-3. 在网易云音乐中启用 **SMTC / 系统媒体控制**并播放歌曲，等待组件连接。
+1. 从 [Releases](https://github.com/SanctuS-awa/GlassDesk/releases) 下载 <strong>GlassDesk-0.2.1.3beta-win-x64-setup.exe</strong> 并运行安装程序。
+2. 系统要求：Windows 11 22H2（Build 22621）或更新版本，x64。安装包自带运行时。
+3. 安装后从开始菜单启动。安装包目前未代码签名，请确认从本仓库 Releases 获取。
+4. 悬停组件可进入小展开，点击可展开首页，拖动空白区域可移动位置。托盘菜单可显示/隐藏组件、打开设置或退出应用。
+5. 在设置 → 插件中启用液态玻璃。旁边的 “Liquid Glass” 按钮会打开独立的中文液态玻璃设置窗口。
 
-支持 **Windows 11 22H2（Build 22621）或更新版本，x64**。安装包自带运行依赖，无需单独安装 .NET 或 Windows App SDK。
+网易云音乐需要开启 SMTC / 系统媒体控制并正在播放。音乐命令、封面和进度能力取决于系统媒体会话提供的内容。应用不提供账号登录、歌单同步或收藏功能。
 
-悬停查看小展开，拖动空白区域调整位置；设置、隐藏与退出都可以从任务栏右下角的托盘菜单进入。关闭设置窗口后，应用会继续在托盘运行。
+## 从源码构建
 
-当前安装包尚未代码签名，请从本仓库 Releases 下载并确认来源。发布页提供 SHA-256 校验文件。
+在 Windows 开发环境双击根目录的 <strong>一键编译.bat</strong>；需要 Visual Studio 2022 的“使用 C++ 的桌面开发”工作负载和 .NET SDK。构建细节见 [构建说明](docs/build.md)。
 
-详细操作见 [使用说明](docs/user-guide.md)，当前限制与发布文档勘误见 [已知问题](docs/known-issues.md)。
+打包安装包请双击 <strong>一键打包安装包.bat</strong>；需要安装 Inno Setup，详见构建说明。
 
 ## 常见问题
 
-**音乐没有连接？** 先确认网易云音乐正在播放，且已开启 SMTC / 系统媒体控制，再到设置 → 通用重新连接。封面和播放能力取决于音乐来源；本版没有账号登录、歌单同步或收藏功能。
+**液态玻璃默认开启吗？**  
+不是。默认关闭；可在设置 → 插件中启用。捕获背景会增加图形与资源开销。关闭后使用普通系统磨砂材质。
 
-**重负载时如何降低开销？** 液态玻璃默认关闭，可以使用基础磨砂材质，并按需关闭动态效果。液态玻璃开启后会增加背景捕获与图形开销。
+**音乐没有连接？**  
+确认网易云音乐正在播放，且已启用 SMTC / 系统媒体控制，再到设置 → 通用重新连接。可用控制取决于媒体来源能力。
 
-**设置保存在哪里？** 默认保存在 `%LocalAppData%\GlassDesk`。卸载会保留该目录，方便重新安装后继续使用原有设置。开机启动默认关闭，快捷键默认未绑定。
+**首页的天气、Wi‑Fi、电池或音量没有数据？**  
+天气卡目前显示尚未接入状态。Wi‑Fi、电池和主音量能力尚未接入的系统会显示未知或禁用状态。
 
-发现问题时，欢迎在 [Issues](https://github.com/Sheng-awa/GlassDesk/issues) 提供 Windows 版本、显示缩放和复现步骤；界面问题可以附上截图。
+**设置保存在哪里？**  
+默认保存在 <code>%LocalAppData%\GlassDesk</code>。卸载会保留设置目录。开机启动默认关闭，快捷键默认未绑定。
 
 ## 隐私与本地处理
 
-- 音频波浪条默认开启，只处理可靠识别的网易云进程树输出，用于本地可视化；不采集麦克风、不保存音频。暂停、隐藏或波浪条不可见时停止采集。
-- 液态玻璃默认关闭，开启后在本机采样显示器背景以绘制材质，会增加资源开销。
-- 系统、能力与错误诊断先保存在有界内存记录中，仅在手动导出时写成诊断文件；不包含歌曲历史或账号信息，不自动上传。
-- 本地插件拥有主程序权限，不能视为隐私或安全沙箱。
+音乐信息来自 Windows 系统媒体会话，在本机显示和发送可用控制。音频波浪条只对可靠识别的网易云进程树输出做本地分析，不使用麦克风，也不保存音频文件。启用液态玻璃后，桌面采样只在本机图形管线中处理；应用不会自动上传桌面画面或诊断信息。
 
-完整边界见 [隐私说明](docs/privacy.md)。
+诊断记录暂存于有界内存队列，只有手动导出时才写成文件。插件运行在主进程内，拥有主程序权限，不能视为安全沙箱。更多内容见 [隐私说明](docs/privacy.md)。
 
-## 开源与许可
+## 文档、贡献与许可
 
-项目代码采用 [MIT 许可](LICENSE)。运行依赖和第三方组件遵循各自许可，详见 [第三方声明](THIRD-PARTY-NOTICES.md) 与 [licenses](licenses)。本地插件在应用进程内运行，请只安装可信来源的插件。
+- [使用说明](docs/user-guide.md) · [已知问题](docs/known-issues.md) · [构建说明](docs/build.md)
+- [架构概览](docs/architecture.md) · [应用 API](docs/app-api.md) · [原生 API](docs/native-api.md) · [平台 API](docs/platform-api.md)
+- [插件开发](docs/plugin-development.md) · [液态玻璃展示页维护](docs/showcase-maintenance.md)
+- 欢迎阅读 [参与贡献指南](CONTRIBUTING.md) 并提交问题或改进建议。
+- 项目采用 [MIT 许可](LICENSE)。运行依赖与第三方组件的许可和声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 与 [licenses](licenses/)。
 
-GlassDesk 与网易云音乐、Microsoft Edge 等第三方产品没有隶属或官方合作关系。

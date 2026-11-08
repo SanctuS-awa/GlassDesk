@@ -10,15 +10,15 @@ public sealed class DetailsPageController
     public bool SavePending {get;private set;}
     public event Action<string>? PageChanged;
     public DetailsPageController(WidgetPreferences preferences)
-        =>CurrentPageId=preferences.Version<4?Music:Normalize(preferences.LastDetailsPageId);
-    public static string Normalize(string? id)=>id is Home or Widgets? id! : Music;
+        =>CurrentPageId=preferences.Version<4?Home:Normalize(preferences.LastDetailsPageId);
+    public static string Normalize(string? id)=>id is Home or Widgets? id! : Home;
     public bool Select(string? id)
     {
         string next=Normalize(id);
         if(next==CurrentPageId)return false;
         CurrentPageId=next;Generation++;SavePending=true;PageChanged?.Invoke(next);return true;
     }
-    public bool SelectPreviewItem(string id)=>id==Music && Select(Music);
+    public bool SelectPreviewItem(string id)=>id==Home && Select(Home);
     public float ScrollOffset=>_scroll[CurrentPageId];
     public void SetScrollOffset(float offset)=>_scroll[CurrentPageId]=float.IsFinite(offset)?Math.Max(0,offset):0;
     public bool IsCurrent(long generation,string pageId)=>generation==Generation&&pageId==CurrentPageId;

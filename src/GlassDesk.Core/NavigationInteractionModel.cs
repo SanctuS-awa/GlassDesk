@@ -11,7 +11,7 @@ public sealed class NavigationInteractionModel
     double _emphasisFrom, _emphasisTarget;
     double _outerVelocity, _outerInitialVelocity, _centerFrom, _centerTarget, _centerStarted, _centerVelocity, _centerInitialVelocity;
     bool _inside, _reducedMotion, _keepExpanded;
-    public NavigationState State { get; private set; } = new(0, NavigationOuterState.Collapsed, null, "music", false);
+    public NavigationState State { get; private set; } = new(0, NavigationOuterState.Collapsed, null, "home", false);
     public bool IsActive { get; private set; }
     public double Expansion { get; private set; }
     public double EmphasisIndex { get; private set; }
@@ -39,7 +39,7 @@ public sealed class NavigationInteractionModel
         _centerStarted = now;
         Array.Clear(_items); Array.Clear(_itemFrom); Array.Clear(_itemTargets);
         _outerStarted = _itemStarted = _emphasisStarted = now;
-        State = new(sequence, NavigationOuterState.Collapsed, null, "music", !companionEnabled);
+        State = new(sequence, NavigationOuterState.Collapsed, null, "home", !companionEnabled);
         if (_keepExpanded) OpenImmediately(now);
     }
 

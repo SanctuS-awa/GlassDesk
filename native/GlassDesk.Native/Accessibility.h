@@ -25,7 +25,7 @@ struct AccessibleState
     std::mutex mutex;
     HWND hwnd{};
     IRawElementProviderFragment* root{}; // Borrowed while the host owns the provider.
-    RECT rectangle{}; unsigned dpi{96}; bool visible{},closing{};
+    RECT rectangle{}; float offsetX{},offsetY{}; unsigned dpi{96}; bool visible{},closing{};
     input::AccessibleSurfaceShape surfaceShape{};
     std::wstring name{L"GlassDesk 音乐小组件"};
     std::vector<AccessibleItem> items;
@@ -55,7 +55,7 @@ class ElementProvider final : public RuntimeClass<RuntimeClassFlags<ClassicCom>,
         if (isRoot) { item.name=state->name; item.enabled=true; return S_OK; }
         auto found=std::find_if(state->items.begin(),state->items.end(),[this](auto const& entryData){return entryData.id==id;});
         if(found==state->items.end()) return UIA_E_ELEMENTNOTAVAILABLE;
-        item=*found; return S_OK;
+        item=*found; if(state->dpi){const float dipPerPixel=96.0f/static_cast<float>(state->dpi);item.x+=state->offsetX*dipPerPixel;item.y+=state->offsetY*dipPerPixel;} return S_OK;
     }
 public:
     ElementProvider(std::shared_ptr<AccessibleState> entryData, int identifier, bool root)
@@ -172,7 +172,9 @@ public:
             std::lock_guard lock(state->mutex);if(!state->hwnd || !state->visible)return UIA_E_ELEMENTNOTAVAILABLE;
             if(x<state->rectangle.left||y<state->rectangle.top||x>=state->rectangle.right||y>=state->rectangle.bottom)return S_OK;
             if(state->dpi==0)return S_OK;
-            auto px=(x-state->rectangle.left)*96/state->dpi, py=(y-state->rectangle.top)*96/state->dpi;
+            const float dipPerPixel=96.0f/static_cast<float>(state->dpi);
+            auto px=(static_cast<float>(x)-static_cast<float>(state->rectangle.left)-state->offsetX)*dipPerPixel;
+            auto py=(static_cast<float>(y)-static_cast<float>(state->rectangle.top)-state->offsetY)*dipPerPixel;
             if(!input::AccessibleSurfaceContainsDips(state->surfaceShape,
                 static_cast<float>(px),static_cast<float>(py)))return S_OK;
             for(auto item=state->items.rbegin();item!=state->items.rend();++item)
@@ -206,7 +208,14 @@ public:
     HRESULT STDMETHODCALLTYPE get_Maximum(double* result) override {if(!result)return E_POINTER;AccessibleItem item;auto hr=Read(item);if(SUCCEEDED(hr))*result=item.maximum;return hr;}
     HRESULT STDMETHODCALLTYPE get_Minimum(double* result) override {if(!result)return E_POINTER;AccessibleItem item;auto hr=Read(item);if(SUCCEEDED(hr))*result=item.minimum;return hr;}
     HRESULT STDMETHODCALLTYPE get_LargeChange(double* result) override {if(!result)return E_POINTER;*result=5;return S_OK;}
-    HRESULT STDMETHODCALLTYPE get_SmallChange(double* result) override {if(!result)return E_POINTER;*result=1;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_SmallChange(double* result) override
+    {
+        if(!result)return E_POINTER;
+        AccessibleItem item;auto hr=Read(item);if(FAILED(hr))return hr;
+        // WidgetActions.HomeVolume is the 0..100 system-volume control; its
+        // keyboard and UIA increment is specified as two percentage points.
+        *result=item.id==370?2.0:1.0;return S_OK;
+    }
 };
 inline ComPtr<ElementProvider> MakeElement(std::shared_ptr<AccessibleState> const& state,int id,bool root)
 { return Microsoft::WRL::Make<ElementProvider>(state,id,root); }

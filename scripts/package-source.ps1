@@ -1,8 +1,6 @@
 $ErrorActionPreference='Stop'
 $taskSourceRoot=Split-Path -Parent $PSScriptRoot
-$taskVersion=([xml](Get-Content -LiteralPath (Join-Path $taskSourceRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
-$taskArchiveName="GlassDesk-$taskVersion-source.zip"
-$taskOutput=Join-Path $taskSourceRoot (Join-Path 'artifacts\installer' $taskArchiveName)
+$taskOutput=Join-Path $taskSourceRoot 'artifacts\installer\GlassDesk-0.2.0-source.zip'
 New-Item -ItemType Directory -Path (Split-Path -Parent $taskOutput) -Force | Out-Null
 $taskFiles=Get-ChildItem -LiteralPath $taskSourceRoot -File -Recurse -Force | Where-Object {
     $taskRelative=[IO.Path]::GetRelativePath($taskSourceRoot,$_.FullName)
@@ -17,6 +15,6 @@ try {
     }
 } finally {$taskArchive.Dispose();$taskStream.Dispose()}
 $taskHash=(Get-FileHash -LiteralPath $taskOutput -Algorithm SHA256).Hash.ToLowerInvariant()
-"$taskHash  $taskArchiveName" | Set-Content -LiteralPath ($taskOutput+'.sha256') -Encoding utf8
+"$taskHash  GlassDesk-0.2.0-source.zip" | Set-Content -LiteralPath ($taskOutput+'.sha256') -Encoding utf8
 Write-Output $taskOutput
 

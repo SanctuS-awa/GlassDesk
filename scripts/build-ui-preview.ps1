@@ -10,7 +10,7 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $taskRoot=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\','/')
 $taskVersion='0.3.0-preview.1'
-$taskIncidentHost='SHENG-AWA'
+$taskIncidentHost='sheng'
 if(!$CandidateId){$CandidateId=[Guid]::NewGuid().ToString('N')}
 if($CandidateId -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,54}[A-Za-z0-9])?$'){throw 'CandidateId must be 1-56 allowed characters and start and end with a letter or digit.'}
 if($RunChecks){

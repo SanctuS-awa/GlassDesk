@@ -19,7 +19,7 @@ public static class PreviewNavigationItems
 {
     public static IReadOnlyList<NavigationEntry> All {get;}=Array.AsReadOnly(new NavigationEntry[]
     {
-        new NavigationEntry("music","音乐",100),new("clock","时钟",101),new("companion","陪伴",102),
+        new NavigationEntry("home","首页",100),new("clock","时钟",101),new("companion","陪伴",102),
         new("focus","专注",103),new("notes","随记",104)
     });
 }
@@ -31,26 +31,26 @@ public sealed record HideAnchor(string StableId,FloatRect OccluderBounds,float O
 /// <summary>One bottom-dock destination. Only <see cref="IsPage"/> entries switch the real page.</summary>
 public sealed record DetailsDockEntry(string Id, string Label, int ActionId, bool IsPage);
 
-/// <summary>The five dock destinations in left-to-right order (music, widgets, clock, focus, notes).</summary>
+/// <summary>The five dock destinations in left-to-right order (home, widgets, clock, focus, notes).</summary>
 public static class DetailsDockItems
 {
-    public const int Music = 0, Widgets = 1, Clock = 2, Focus = 3, Notes = 4;
+    public const int Home = 0, Music = Home, Widgets = 1, Clock = 2, Focus = 3, Notes = 4;
     public static IReadOnlyList<DetailsDockEntry> All { get; } = Array.AsReadOnly(new[]
     {
-        new DetailsDockEntry("music", "音乐", WidgetActions.DockFirst + Music, true),
+        new DetailsDockEntry("home", "首页", WidgetActions.DockFirst + Home, true),
         new DetailsDockEntry("widgets", "小组件", WidgetActions.DockFirst + Widgets, true),
         new DetailsDockEntry("clock", "时钟", WidgetActions.DockFirst + Clock, false),
         new DetailsDockEntry("focus", "专注", WidgetActions.DockFirst + Focus, false),
         new DetailsDockEntry("notes", "随记", WidgetActions.DockFirst + Notes, false)
     });
 
-    /// <summary>Dock slot for a real page ID; unknown IDs fall back to music.</summary>
+    /// <summary>Dock slot for a real page ID; unknown IDs fall back to home.</summary>
     public static int IndexOf(string? pageId)
     {
         string normalized = DetailsPageController.Normalize(pageId);
         for (int index = 0; index < All.Count; index++)
             if (All[index].Id == normalized) return index;
-        return Music;
+        return Home;
     }
 }
 

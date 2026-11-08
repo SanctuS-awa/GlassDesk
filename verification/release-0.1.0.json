@@ -15,8 +15,8 @@
   "HtmlIncluded": true,
   "PublishedInstallerReplaced": false,
   "PublishedInstallerNoticeHeaderCorrected": false,
-  "Release": "https://github.com/Sheng-awa/GlassDesk/releases/tag/v0.1.0",
-  "Website": "https://sheng-awa.github.io/GlassDesk/",
+  "Release": "https://github.com/SanctuS-awa/GlassDesk/releases/tag/v0.1.0",
+  "Website": "https://sanctus-awa.github.io/GlassDesk/",
   "VerificationScope": [
     "Installer compilation completed",
     "Published asset digest and size matched local installer",
@@ -30,14 +30,14 @@
   "VerifiedAt": "2026-10-23T05:21:15.6633063+08:00",
   "CurrentBranchCI": {
     "SourceCommit": "376b25b6130a659e5b98e2095a9fc1c67438cebf",
-    "Run": "https://github.com/Sheng-awa/GlassDesk/actions/runs/39855999286",
+    "Run": "https://github.com/SanctuS-awa/GlassDesk/actions/runs/39855999286",
     "Conclusion": "success",
     "Environment": "GitHub hosted windows-2025",
     "Scope": "Native build, self-contained publish, archived SDK fixture, isolated Core/Platform/Plugin console checks",
     "DoesNotVerify": "Windows 11 desktop install/start/uninstall or actual desktop UI interaction",
     "EarlierFailedRuns": [
-      "https://github.com/Sheng-awa/GlassDesk/actions/runs/39854446617",
-      "https://github.com/Sheng-awa/GlassDesk/actions/runs/39855273317"
+      "https://github.com/SanctuS-awa/GlassDesk/actions/runs/39854446617",
+      "https://github.com/SanctuS-awa/GlassDesk/actions/runs/39855273317"
     ],
     "PassedChecks": {
       "Core": 312,

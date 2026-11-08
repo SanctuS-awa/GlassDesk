@@ -106,7 +106,7 @@ public sealed class PluginHost : IAsyncDisposable
     {
         this.dispatcher=dispatcher;root=Path.Combine(dataDirectory,"plugins");configRoot=Path.Combine(dataDirectory,"plugin-config");
         AddBuiltIn("glassdesk.companion","陪伴球",true,()=>new CompanionPlugin(),"回应展开、指针与音乐变化；不规则短眨眼和注视，隐藏时停止动作。");
-        AddBuiltIn("glassdesk.liquidglass","液态玻璃",false,()=>new LiquidGlassPlugin(),"启用时通过 GPU 桌面捕获显示液态玻璃；关闭时释放捕获资源并恢复系统磨砂。");
+        AddBuiltIn("glassdesk.liquidglass","液态玻璃",false,()=>new LiquidGlassPlugin(),"启用时通过 GPU 桌面捕获显示液态玻璃；关闭时释放捕获资源并恢复系统磨砂。","0.3");
         if(Directory.Exists(root))foreach(string directory in Directory.EnumerateDirectories(root).Where(d=>!Path.GetFileName(d).StartsWith('.')))
         {
             try
@@ -118,8 +118,8 @@ public sealed class PluginHost : IAsyncDisposable
             catch(Exception error) when(error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException) { }
         }
     }
-    void AddBuiltIn(string id,string name,bool enabled,Func<IGlassDeskPlugin> factory,string resource)
-    {entries.TryAdd(id,new(new(id,name,"0.2.0",PluginApi.Version,"","",resource),null,factory){Enabled=enabled});}
+    void AddBuiltIn(string id,string name,bool enabled,Func<IGlassDeskPlugin> factory,string resource,string version="0.2.0")
+    {entries.TryAdd(id,new(new(id,name,version,PluginApi.Version,"","",resource),null,factory){Enabled=enabled});}
     public JsonElement? GetConfiguration(string id)
     {
         if(configuration.TryGetValue(id,out var value))return value.Clone();

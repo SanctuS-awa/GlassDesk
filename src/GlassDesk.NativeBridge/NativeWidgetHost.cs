@@ -158,16 +158,24 @@ public sealed partial class NativeWidgetHost : IWidgetHost
     public void ApplyFrame(HostFrame frame)
     {
         CheckThread();
+        if(pendingGlassScene is { Shapes.Length: >0 })
+            throw new InvalidOperationException("A pending glass scene requires a matching positioned-frame commit.");
+        pendingGlassScene=null;
         var value=new NativeMethods.Frame(frame.Width,frame.Height,frame.Radius,frame.Blur,frame.TintOpacity,frame.Solid?1:0);
         Marshal.ThrowExceptionForHR(NativeMethods.GDApplyFrameWithTension(native,in value,frame.SurfaceTension));RefreshContext();
     }
-    /// <summary>Submits a candidate's DIP frame and physical screen position together.</summary>
+    /// <summary>Submits the DIP frame and physical screen position together.</summary>
     public void ApplyPositionedFrame(HostFrame frame,int screenX,int screenY)
+        => ApplyContinuousPositionedFrame(frame,screenX,screenY);
+    public void ApplyContinuousPositionedFrame(HostFrame frame,float screenX,float screenY)
     {
         CheckThread();
+        if(pendingGlassScene is { Shapes.Length: >0 })
+            throw new InvalidOperationException("Use the sequence overload when a glass shape snapshot is pending.");
+        pendingGlassScene=null;
         var value=new NativeMethods.Frame(frame.Width,frame.Height,frame.Radius,frame.Blur,frame.TintOpacity,frame.Solid?1:0);
         int result;
-        try {result=NativeMethods.GDApplyPositionedFrameWithTension(native,in value,frame.SurfaceTension,screenX,screenY);}
+        try {result=NativeMethods.GDApplyContinuousPositionedFrameWithTension(native,in value,frame.SurfaceTension,screenX,screenY);}
         catch(EntryPointNotFoundException error)
         {
             throw new InvalidOperationException("GlassDesk.Native.dll requires atomic frame placement; use the DLL from this candidate build.",error);
@@ -186,6 +194,11 @@ public sealed partial class NativeWidgetHost : IWidgetHost
         if(!IsWindowVisible(Handle))return;
         const uint flags=0x0001|0x0002|0x0010|0x0200; // No size/move/activation/owner reordering.
         if(!SetWindowPos(Handle,new nint(-1),0,0,0,0,flags))Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
+    }
+    public void SetLiquidGlassMotionActive(bool active)
+    {
+        CheckThread();
+        Marshal.ThrowExceptionForHR(NativeMethods.GDSetLiquidGlassMotionActive(native,active?1:0));
     }
     public void SetLiquidGlassEnabled(bool enabled)
     {CheckThread();Marshal.ThrowExceptionForHR(NativeMethods.GDSetLiquidGlassEnabled(native,enabled?1:0));}
@@ -335,6 +348,7 @@ public sealed partial class NativeWidgetHost : IWidgetHost
     public void Dispose()
     {
         if(disposed)return;CheckThread();disposed=true;
+        pendingGlassScene=null;
         try{StopLiquidGlassCapture();}catch{}
         try{Marshal.ThrowExceptionForHR(NativeMethods.GDDestroy(native));}
         finally
@@ -364,9 +378,11 @@ internal static partial class NativeMethods
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern unsafe int GDCreateCompositionPath(nint context,Vector2* points,uint count,float rounding,out nint path);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyFrame(nint context,in Frame frame);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyFrameWithTension(nint context,in Frame frame,float tension);
+    [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyContinuousPositionedFrameWithTension(nint context,in Frame frame,float tension,float screenX,float screenY);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDApplyPositionedFrameWithTension(nint context,in Frame frame,float tension,int screenX,int screenY);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetPlacement(nint context,int x,int y);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetVisible(nint context,int visible);
+    [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetLiquidGlassMotionActive(nint context,int active);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern int GDSetLiquidGlassEnabled(nint context,int enabled);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]internal static extern unsafe int GDGetLiquidGlassStatus(nint context,char* text,uint capacity);
     [DllImport(Library,ExactSpelling=true,CallingConvention=CallingConvention.StdCall,CharSet=CharSet.Unicode)]internal static extern int GDSaveLiquidGlassDiagnosticFrame(nint context,string path);

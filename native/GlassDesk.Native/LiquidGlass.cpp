@@ -23,7 +23,8 @@ namespace gd
 namespace
 {
 // The host uses only Optics, a procedural highlight independent of desktop pixels.
-// Blur/refraction shaders remain solely for SaveReferencePreview's generated grid.
+// Legacy blur/refraction helpers remain in this compatibility unit; the exposed
+// production surface path is procedural optics and does not read pixels back.
 constexpr char shader[]=R"HLSL(
 cbuffer Parameters : register(b0) {
     float2 textureSize; float2 panelSize;
@@ -375,89 +376,9 @@ void LiquidGlass::Suspend(bool,bool)noexcept{}
 void LiquidGlass::Tick(RECT,float,float)noexcept{}
 HRESULT LiquidGlass::SaveReferencePreview(wchar_t const* path,unsigned width,unsigned height,float radius,float scale,unsigned theme,float tension)noexcept
 {
-    if(!path||!*path||width<2||height<2||width>2048||height>2048||!std::isfinite(scale)||scale<.5f||scale>3||theme>3||!std::isfinite(tension)||std::abs(tension)>1.15f)return E_INVALIDARG;
-    // This fixture generates its own grid input and never reads desktop pixels.
-    try
-    {
-        impl->CreateShaders();unsigned margin=unsigned(std::ceil(40*scale)),cw=width+2*margin,ch=height+2*margin;
-        auto pattern=[&](unsigned x,unsigned y)
-        {
-            float fx=float(x)/cw,fy=float(y)/ch;
-            float r=theme==1?27.f:theme==2?90+120*fy:250.f;
-            float g=theme==1?32.f:theme==2?140+60*fx:250.f;
-            float b=theme==1?42.f:theme==2?210-90*fy:250.f;
-            if(theme!=3)
-            {
-                bool grid=x%unsigned(48*scale)<unsigned(1.2f*scale)||y%unsigned(48*scale)<unsigned(1.2f*scale);
-                if(grid){r=theme==1?95.f:150.f;g=theme==1?102.f:157.f;b=theme==1?113.f:169.f;}
-                if(fx>.14f&&fx<.24f&&fy>.10f&&fy<.92f){r=theme==1?75.f:98.f;g=theme==1?90.f:122.f;b=theme==1?165.f:238.f;}
-                if(fy>.57f&&fy<.66f&&fx>.09f&&fx<.92f){r=theme==1?158.f:223.f;g=theme==1?95.f:132.f;b=theme==1?118.f:152.f;}
-            }
-            return 0xff000000u|(unsigned(std::clamp(r,0.f,255.f))<<16)|(unsigned(std::clamp(g,0.f,255.f))<<8)|unsigned(std::clamp(b,0.f,255.f));
-        };
-        std::vector<unsigned> input(size_t(cw)*ch);for(unsigned y=0;y<ch;++y)for(unsigned x=0;x<cw;++x)input[size_t(y)*cw+x]=pattern(x,y);
-        impl->Ensure(impl->crop,cw,ch);impl->context->UpdateSubresource(impl->crop.value.get(),0,nullptr,input.data(),cw*4,0);
-        impl->Ensure(impl->prefilter,(cw+3)/4,(ch+3)/4);impl->Ensure(impl->scratch,(cw+3)/4,(ch+3)/4);impl->Ensure(impl->output,width,height);
-        impl->Light(width,height,radius,scale,tension);
-        auto read=[&](Texture const& tex)
-        {
-            D3D11_TEXTURE2D_DESC desc{};tex.value->GetDesc(&desc);desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
-            com_ptr<ID3D11Texture2D> staging;check_hresult(impl->device->CreateTexture2D(&desc,nullptr,staging.put()));impl->context->CopyResource(staging.get(),tex.value.get());
-            std::vector<unsigned> result(size_t(tex.width)*tex.height);D3D11_MAPPED_SUBRESOURCE data{};check_hresult(impl->context->Map(staging.get(),0,D3D11_MAP_READ,0,&data));
-            for(unsigned y=0;y<tex.height;++y)std::memcpy(result.data()+size_t(y)*tex.width,static_cast<BYTE*>(data.pData)+size_t(y)*data.RowPitch,tex.width*4);
-            impl->context->Unmap(staging.get(),0);return result;
-        };
-        auto light=read(impl->lighting);unsigned outWidth=cw*2;
-        std::vector<unsigned> result(size_t(outWidth)*ch);
-        Parameters constants{{float(cw),float(ch)},{float(width),float(height)},{float(margin),float(margin)},radius,20*scale,scale,0,{}};
-        for(unsigned mode=0;mode<2;++mode)
-        {
-            constants.refraction=0;constants.padding[0]=tension;impl->Pass(impl->crop,impl->prefilter,impl->prefilterShader.get(),constants);
-            impl->Pass(impl->prefilter,impl->scratch,impl->horizontal.get(),constants);
-            impl->Pass(impl->scratch,impl->output,impl->glass.get(),constants,impl->crop.source.get());auto rendered=read(impl->output);
-            for(unsigned y=0;y<ch;++y)for(unsigned x=0;x<cw;++x)
-            {
-                unsigned color=input[size_t(y)*cw+x];
-                auto distance=[&](float px,float py)
-                {
-                    return SurfaceDistance(px-float(margin),py-float(margin),float(width),float(height),radius,scale,tension);
-                };
-                // Match the ordinary native host's contact shadow in this
-                // generated fixture; it is not desktop-material evidence.
-                if(distance(float(x)+.5f,float(y)+.5f)>0)
-                {
-                    float d=std::max(0.f,distance(float(x)+.5f,float(y)+.5f-4*scale));
-                    float shadow=(24.f/255)*std::exp(-d*d/(128*scale*scale));unsigned shaded=0xff000000;
-                    for(unsigned shift:{0u,8u,16u})shaded|=unsigned(std::lround(((color>>shift)&255)*(1-shadow)))<<shift;
-                    color=shaded;
-                }
-                if(x>=margin&&x<margin+width&&y>=margin&&y<margin+height)
-                {
-                    unsigned px=x-margin,py=y-margin;
-                    float sd=SurfaceDistance(float(px)+.5f,float(py)+.5f,float(width),float(height),radius,scale,tension);
-                    float coverage=std::clamp(.5f-sd,0.f,1.f);auto index=size_t(py)*width+px;unsigned glass=rendered[index],shine=light[index];
-                    float lightAmount=mode?1.0f:0.0f;float alpha=float(shine>>24)/255*lightAmount;unsigned blended=0xff000000;
-                    for(unsigned shift:{0u,8u,16u})
-                    {
-                        float material=((glass>>shift)&255)*.76f+255*.24f;
-                        material=material*(1-alpha)+((shine>>shift)&255)*lightAmount;
-                        float channel=((color>>shift)&255)*(1-coverage)+material*coverage;
-                        blended|=unsigned(std::lround(std::clamp(channel,0.f,255.f)))<<shift;
-                    }
-                    color=blended;
-                }
-                result[size_t(y)*outWidth+x+mode*cw]=color;
-            }
-        }
-        com_ptr<IWICImagingFactory> factory;check_hresult(CoCreateInstance(CLSID_WICImagingFactory2,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(factory.put())));
-        com_ptr<IWICStream> stream;check_hresult(factory->CreateStream(stream.put()));check_hresult(stream->InitializeFromFilename(path,GENERIC_WRITE));
-        com_ptr<IWICBitmapEncoder> encoder;check_hresult(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put()));check_hresult(encoder->Initialize(stream.get(),WICBitmapEncoderNoCache));
-        com_ptr<IWICBitmapFrameEncode> frame;check_hresult(encoder->CreateNewFrame(frame.put(),nullptr));check_hresult(frame->Initialize(nullptr));check_hresult(frame->SetSize(outWidth,ch));
-        WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;check_hresult(frame->SetPixelFormat(&format));
-        check_hresult(frame->WritePixels(ch,outWidth*4,outWidth*ch*4,reinterpret_cast<BYTE*>(result.data())));check_hresult(frame->Commit());check_hresult(encoder->Commit());
-        return S_OK;
-    }
-    catch(...){return to_hresult();}
+    // CPU pixel readback is prohibited, including for generated preview fixtures.
+    (void)path;(void)width;(void)height;(void)radius;(void)scale;(void)theme;(void)tension;
+    return E_NOTIMPL;
 }
 CompositionDrawingSurface LiquidGlass::OpticalSurface(unsigned width,unsigned height,float radius,float scale,float tension)noexcept
 {try{return impl->Light(width,height,radius,scale,tension);}catch(...){return nullptr;}}

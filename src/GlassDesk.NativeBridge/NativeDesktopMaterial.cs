@@ -54,6 +54,44 @@ public sealed partial class NativeWidgetHost
     [StructLayout(LayoutKind.Sequential)]
     readonly record struct GlassLens(float X,float Y,float Width,float Height,float Radius,float Opacity,float Emphasis,float LightInk);
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct NativeGlassMaterialSettings
+    {
+        public uint TintArgb;
+        public float Opacity,Thin,Dense,Blur,Saturation,Brightness,Contrast,RimLight,Bevel,Shadow;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct NativeLiquidGlassSettings
+    {
+        public uint Size,Version;
+        public int Theme,Ink;
+        public uint AutoDensity,LensEnabled;
+        public NativeGlassMaterialSettings Light,Dark;
+        public float RimMaxPixels,Edge,Power,Dispersion,CenterDispersion,Density,Threshold;
+    }
+
+    public void SetLiquidGlassSettings(LiquidGlassPreferences preferences)
+    {
+        CheckThread();
+        if(!IsLiquidGlassCapture)return;
+        var value=(preferences??new()).Validated();
+        static NativeGlassMaterialSettings Material(LiquidGlassMaterialPreferences source)=>new()
+        {
+            TintArgb=0xff000000u|uint.Parse(source.Tint.AsSpan(1),System.Globalization.NumberStyles.HexNumber,System.Globalization.CultureInfo.InvariantCulture),
+            Opacity=source.Opacity,Thin=source.Thin,Dense=source.Dense,Blur=source.Blur,Saturation=source.Saturation,
+            Brightness=source.Brightness,Contrast=source.Contrast,RimLight=source.RimLight,Bevel=source.Bevel,Shadow=source.Shadow
+        };
+        var nativeSettings=new NativeLiquidGlassSettings
+        {
+            Size=(uint)Marshal.SizeOf<NativeLiquidGlassSettings>(),Version=1,
+            Theme=(int)value.Theme,Ink=(int)value.Ink,AutoDensity=value.AutoDensity?1u:0u,
+            LensEnabled=value.LensEnabled?1u:0u,Light=Material(value.Light),Dark=Material(value.Dark),
+            RimMaxPixels=value.RimMaxPixels,Edge=value.Edge,Power=value.Power,Dispersion=value.Dispersion,
+            CenterDispersion=value.CenterDispersion,Density=value.Density,Threshold=value.Threshold
+        };
+        Marshal.ThrowExceptionForHR(GDSetLiquidGlassSettings(native,in nativeSettings));
+    }
+
     public unsafe void SetOwnedWallpaper(byte[] pixels,int width,int height,DesktopWallpaperMapping mapping,uint backgroundArgb)
     {
         CheckThread();ArgumentNullException.ThrowIfNull(pixels);ArgumentNullException.ThrowIfNull(mapping);
@@ -83,7 +121,7 @@ public sealed partial class NativeWidgetHost
             Marshal.ThrowExceptionForHR(result);OwnedImagePresented=result==0&&eligible&&OwnedImageAvailable;
         }catch(Exception error){TripOwnedMaterial($"material present: 0x{error.HResult:X8}");throw;}
     }
-    // New capture route (0.2.1.1beta). The old lens-geometry export is gone:
+    // New capture route (0.2.1.3beta, Liquid Glass plugin 0.3). The old lens-geometry export is gone:
     // the capture object refracts the whole widget rectangle itself, so the
     // scene no longer submits per-control lens regions to native code.
     public bool LiquidGlassInkAvailable
@@ -166,6 +204,8 @@ public sealed partial class NativeWidgetHost
     static extern int GDCreateV2(NativeMethods.Callback callback,nint user,in DesktopCreation options,out nint context,out nint window);
     [DllImport("GlassDesk.Native.dll",ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]
     static extern unsafe int GDSetOwnedGlassImage(nint context,byte* pixels,uint width,uint height,uint bytes,in ImageMapping mapping);
+    [DllImport("GlassDesk.Native.dll",ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]
+    static extern int GDSetLiquidGlassSettings(nint context,in NativeLiquidGlassSettings settings);
     [DllImport("GlassDesk.Native.dll",ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]
     static extern unsafe int GDPresentOwnedGlass(nint context,int eligible,GlassLens* lenses,uint count,ulong sequence);
     [DllImport("GlassDesk.Native.dll",ExactSpelling=true,CallingConvention=CallingConvention.StdCall)]

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "appVersion": "0.1.0",
+  "appVersion": "0.2.1.3-beta",
   "capturedDate": "2026-10-12",
   "packages": [
     {
@@ -530,12 +530,20 @@
       "sha256": "5e2ae6e22518b6e5605c21c2e1db1933de47c2ff0bcb1d6e8bcb278745967651"
     },
     {
+      "path": "licenses/Glasswork/LICENSE",
+      "component": "Glasswork",
+      "version": "4f0b6744b898b3a9b98fbd913ab24fdb83c53162",
+      "source": "https://raw.githubusercontent.com/kubai087/glasswork/4f0b6744b898b3a9b98fbd913ab24fdb83c53162/LICENSE",
+      "kind": "original",
+      "sha256": "b38c1defe9e46be8baa663da135c74b3edb0d2ae8c930e9b41d9405f6013e512"
+    },
+    {
       "path": "licenses/installer-third-party-terms.txt",
       "component": "Installer component license acceptance",
-      "version": "0.1.0",
+      "version": "0.2.1.3-beta",
       "source": "Concatenation of preserved applicable licenses listed in this file",
       "kind": "combined original texts with explanatory introduction",
-      "sha256": "d1ea5c4f20211cc4e85f5020aa673f5d8e815f279136133507060a7c92c6c48d"
+      "sha256": "380e035f5fee413f0968de7343eb85c4dc93be136c765d0e83d7f646fe74a0aa"
     }
   ]
-}
+}

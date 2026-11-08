@@ -9,7 +9,9 @@ param(
 
 $ErrorActionPreference='Stop'
 $taskRoot=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\','/')
-$taskVersion=([xml](Get-Content -LiteralPath (Join-Path $taskRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
+$taskProperties=([xml](Get-Content -LiteralPath (Join-Path $taskRoot 'Directory.Build.props') -Raw)).Project.PropertyGroup
+$taskVersion=$taskProperties.Version
+$taskInstallerVersion=$taskProperties.InformationalVersion
 if(!$CandidateId){$CandidateId=[Guid]::NewGuid().ToString('N')}
 if($CandidateId -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,54}[A-Za-z0-9])?$'){throw 'CandidateId must be 1-56 allowed characters and start and end with a letter or digit.'}
 
@@ -28,7 +30,7 @@ function Get-ExistingPathAttributes([string]$Path){
 function Assert-IndependentTestMachine([string]$DeclaredName){
     if(!$DeclaredName){throw 'RunChecks requires -IndependentTestMachineName with the target machine name.'}
     $taskMachine=[Environment]::MachineName
-    if([StringComparer]::OrdinalIgnoreCase.Equals($taskMachine,'SHENG-AWA')){throw 'Graphical and native checks are disabled on the incident host SHENG-AWA.'}
+    if([StringComparer]::OrdinalIgnoreCase.Equals($taskMachine,'sheng')){throw 'Graphical and native checks are disabled on the incident host sheng.'}
     if(![StringComparer]::OrdinalIgnoreCase.Equals($taskMachine,$DeclaredName)){throw "Declared test machine '$DeclaredName' does not match this machine '$taskMachine'. Run checks on the named independent test machine."}
 }
 
@@ -65,20 +67,15 @@ try {
     $taskNativeProperty="-p:GlassDeskNativeDirectory=$taskNative"
     $taskSerial=@('-m:1','-p:BuildInParallel=false')
 
-    & dotnet restore '.\src\GlassDesk.App\GlassDesk.App.csproj' -r win-x64 --locked-mode $taskNativeProperty @taskSerial
+    & dotnet restore '.\src\GlassDesk.App\GlassDesk.App.csproj' --locked-mode $taskNativeProperty
     if($LASTEXITCODE -ne 0){throw 'Locked dependency restore failed.'}
-    $taskFixture='.\tests\Fixtures\LegacyPlugin\GlassDesk.LegacyPlugin.csproj'
-    & dotnet restore $taskFixture -r win-x64 --locked-mode $taskNativeProperty @taskSerial
-    if($LASTEXITCODE -ne 0){throw 'Locked legacy fixture restore failed.'}
-    & dotnet build $taskFixture -c Release -r win-x64 --no-restore -p:AppendRuntimeIdentifierToOutputPath=false $taskNativeProperty @taskSerial
-    if($LASTEXITCODE -ne 0){throw 'Legacy fixture build failed.'}
     foreach($taskProject in @('.\tests\GlassDesk.Core.Tests\GlassDesk.Core.Tests.csproj','.\tests\GlassDesk.PlatformChecks\GlassDesk.PlatformChecks.csproj','.\tests\GlassDesk.PluginChecks\GlassDesk.PluginChecks.csproj','.\tests\GlassDesk.AudioChecks\GlassDesk.AudioChecks.csproj')){
-        & dotnet restore $taskProject -r win-x64 --locked-mode $taskNativeProperty @taskSerial
+        & dotnet restore $taskProject --locked-mode $taskNativeProperty @taskSerial
         if($LASTEXITCODE -ne 0){throw "Locked test restore failed: $taskProject"}
-        & dotnet build $taskProject -c Release -r win-x64 --no-restore -p:AppendRuntimeIdentifierToOutputPath=false $taskNativeProperty @taskSerial
+        & dotnet build $taskProject -c Release --no-restore $taskNativeProperty @taskSerial
         if($LASTEXITCODE -ne 0){throw "Check build failed: $taskProject"}
         if($RunChecks){
-            $taskRunArguments=@('run','--project',$taskProject,'-c','Release','-r','win-x64','--no-build','--no-restore','-p:AppendRuntimeIdentifierToOutputPath=false')
+            $taskRunArguments=@('run','--project',$taskProject,'-c','Release','--no-build','--no-restore')
             if($SkipStress -and $taskProject -eq '.\tests\GlassDesk.Core.Tests\GlassDesk.Core.Tests.csproj'){$taskRunArguments+=@('--','--no-stress')}
             & dotnet @taskRunArguments
             if($LASTEXITCODE -ne 0){throw "Checks failed: $taskProject"}
@@ -103,9 +100,9 @@ try {
 
     if(!$CompilerPath){$CompilerPath=Join-Path $taskRoot '.tools\innosetup-7.1.0\ISCC.exe'}
     if(!(Test-Path -LiteralPath $CompilerPath -PathType Leaf)){throw 'Inno Setup 7.1.0 x64 ISCC.exe is required. Pass -CompilerPath or provision the documented portable compiler.'}
-    & $CompilerPath --quiet "/DAppVersion=$taskVersion" "/DPublishDir=$taskPublishPath" "--output-dir=$taskInstallerDirectory" '.\installer\GlassDesk.iss'
+    & $CompilerPath --quiet "/DAppVersion=$taskInstallerVersion" "--output-dir=$taskInstallerDirectory" '.\installer\GlassDesk.iss'
     if($LASTEXITCODE -ne 0){throw 'Installer build failed.'}
-    $taskInstaller=Join-Path $taskInstallerDirectory "GlassDesk-$taskVersion-win-x64-setup.exe"
+    $taskInstaller=Join-Path $taskInstallerDirectory "GlassDesk-$taskInstallerVersion-win-x64-setup.exe"
     $taskHash=(Get-FileHash -LiteralPath $taskInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
     "$taskHash  $([IO.Path]::GetFileName($taskInstaller))" | Set-Content -LiteralPath (Join-Path $taskInstallerDirectory 'SHA256SUMS.txt') -Encoding utf8
     Write-Output $taskInstaller

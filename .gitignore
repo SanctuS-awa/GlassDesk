@@ -1,7 +1,9 @@
 **/bin/
 **/obj/
-.tools/
-artifacts/
-.local-notes/
-.vs/
+/.tools/
+/artifacts/
+/.local-notes/
+/.vs/
 *.user
+/_summary*.md
+node_modules/

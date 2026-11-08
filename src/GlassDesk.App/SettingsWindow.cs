@@ -103,6 +103,7 @@ public sealed class SettingsWindow : Window, IDisposable
     NavigationView? _navigation;
     readonly List<NavigationViewItem> _navigationItems = [];
     SettingsPageDeck? _deck;
+    LiquidGlassSettingsWindow? _liquidGlassSettings;
     SettingsCapsulePreview? _capsuleLayoutPreview;
     SettingsCapsulePreview? _clockLayoutPreview;
     SettingsLiquidPreview? _liquidPreview;
@@ -508,7 +509,14 @@ public sealed class SettingsWindow : Window, IDisposable
         companion.Children.Add(form); companion.Children.Add(colors);
 
         var plugins = Section("安装本地功能插件，分别控制各项贡献。");
-        plugins.Children.Add(Group(ToggleRow("液态玻璃", _liquidGlass, "在系统磨砂上叠加曲面高光与边缘厚度，不截取桌面。")));
+        plugins.Children.Add(Group(ToggleRow("液态玻璃", _liquidGlass, "折射玻璃下方的桌面，支持独立调节材质、透镜和自动密度。")));
+        var liquidGlassSettings = CommandButton("Liquid Glass", "\uE713");
+        liquidGlassSettings.Click += (_, _) =>
+        {
+            _liquidGlassSettings ??= new LiquidGlassSettingsWindow(_coordinator);
+            _liquidGlassSettings.Show();
+        };
+        plugins.Children.Add(liquidGlassSettings);
         plugins.Children.Add(_liquidGlassStatus);
         var resetLiquidGlass = CommandButton("重置液态玻璃", "\uE777");
         resetLiquidGlass.Click += (_, _) => _coordinator.ResetLiquidGlassCapture();
@@ -1101,6 +1109,7 @@ public sealed class SettingsWindow : Window, IDisposable
             CompanionColor = preservePendingAppearance || pending.CompanionColor != requested.CompanionColor ? pending.CompanionColor : actual.CompanionColor,
             CompanionAppearanceId = preservePendingAppearance || pending.CompanionAppearanceId != requested.CompanionAppearanceId ? pending.CompanionAppearanceId : actual.CompanionAppearanceId,
             LiquidGlassEnabled = pending.LiquidGlassEnabled != requested.LiquidGlassEnabled ? pending.LiquidGlassEnabled : actual.LiquidGlassEnabled,
+            LiquidGlass = pending.LiquidGlass != requested.LiquidGlass ? pending.LiquidGlass : actual.LiquidGlass,
             HoverDelayMs = pending.HoverDelayMs != requested.HoverDelayMs ? pending.HoverDelayMs : actual.HoverDelayMs,
             LeaveDelayMs = pending.LeaveDelayMs != requested.LeaveDelayMs ? pending.LeaveDelayMs : actual.LeaveDelayMs,
             AvoidFullscreen = pending.AvoidFullscreen != requested.AvoidFullscreen ? pending.AvoidFullscreen : actual.AvoidFullscreen,
@@ -1684,6 +1693,8 @@ public sealed class SettingsWindow : Window, IDisposable
         if (_disposed) return;
         _disposed = true;
         _shown = false;
+        _liquidGlassSettings?.Dispose();
+        _liquidGlassSettings = null;
         _liquidPreview?.Dispose();
         _deck?.StopTransition();
         if (_navigation is not null) _navigation.SelectionChanged -= OnNavigationSelectionChanged;
