@@ -8,7 +8,7 @@
       "glassdesk.plugins": {
         "type": "Project",
         "dependencies": {
-          "GlassDesk.Core": "[0.2.1.2-beta, )"
+          "GlassDesk.Core": "[0.2.2, )"
         }
       }
     },

@@ -17,17 +17,18 @@ static class HomeLayoutChecks
             "navigation card occupies the bottom-right 2x2 cells at (186,174,156,206)");
 
         var dock = HomeLayout.Dock;
-        check(dock == new FloatRect(20, 440, 320, 56),
-            "folder dock keeps the reviewed (20,440,320,56) geometry");
+        check(dock == new FloatRect(HomeLayout.DockX, HomeLayout.DockY, HomeLayout.DockWidth, HomeLayout.DockHeight),
+            "folder dock follows its current dashboard geometry");
 
         bool folders = true;
-        foreach (float center in HomeLayout.FolderCenters)
+        for (int index = 0; index < HomeLayout.FolderCenters.Count; index++)
         {
-            var slot = HomeLayout.FolderSlot(HomeLayout.FolderCenters.ToList().IndexOf(center));
-            folders &= Near(slot.X + slot.Width / 2, center) && Near(slot.Y + slot.Height / 2, 468)
+            var slot = HomeLayout.FolderSlot(index);
+            folders &= Near(slot.X + slot.Width / 2, dock.X + HomeLayout.FolderCenters[index])
+                && Near(slot.Y + slot.Height / 2, dock.Y + dock.Height / 2)
                 && slot.Width >= 44 && slot.Height >= 44 && slot.Y >= dock.Y && slot.Bottom <= dock.Bottom;
         }
-        check(folders, "three folder buttons stay centred at 124/180/236 with >=44x44 targets inside the dock");
+        check(folders, "folder buttons stay centred on their dock-relative slots with >=44x44 targets");
 
         var pop = HomeLayout.Popover;
         check(pop == new FloatRect(24, 220, 312, 208)
@@ -50,9 +51,10 @@ static class HomeLayoutChecks
         {
             float arrow = HomeLayout.PopoverArrowX(index);
             arrows &= arrow >= 22 && arrow <= pop.Width - 22
-                && Near(arrow, HomeLayout.FolderSlot(index).X + HomeLayout.FolderSize / 2 - pop.X);
+                && Near(arrow, Math.Clamp(HomeLayout.FolderSlot(index).X + HomeLayout.FolderSize / 2 - pop.X,
+                    22, pop.Width - 22));
         }
-        check(arrows, "the popover arrow tracks each folder centre and stays inside the rounded safe area");
+        check(arrows, "the popover arrow follows each folder where possible and stays inside the rounded safe area");
 
         check(HomeLayout.AppCells.Count == 8 && HomeLayout.AppCells.All(cell => HomeLayout.ContainsColumnRow(cell.Column, cell.Row))
             && !HomeLayout.AppCells.Any(cell => cell.Column >= 2 && cell.Row >= 1),

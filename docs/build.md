@@ -29,12 +29,15 @@ dotnet publish .\src\GlassDesk.App\GlassDesk.App.csproj -c Release -r win-x64 --
 以下为控制台检查程序，使用 `dotnet run` 才会执行断言。`--no-stress` 关闭 Core / Plugin 的循环压力部分，Platform 忽略该参数。
 
 ```powershell
-dotnet run --project tests/GlassDesk.Core.Tests -c Release -- --no-stress
-dotnet run --project tests/GlassDesk.PlatformChecks -c Release -- --no-stress
-dotnet run --project tests/GlassDesk.PluginChecks -c Release -- --no-stress
+dotnet restore tests/GlassDesk.Core.Tests/GlassDesk.Core.Tests.csproj -r win-x64 --locked-mode
+dotnet run --project tests/GlassDesk.Core.Tests/GlassDesk.Core.Tests.csproj -c Release --no-restore -- --no-stress
+dotnet restore tests/GlassDesk.PlatformChecks/GlassDesk.PlatformChecks.csproj -r win-x64 --locked-mode
+dotnet run --project tests/GlassDesk.PlatformChecks/GlassDesk.PlatformChecks.csproj -c Release --no-restore -- --no-stress
+dotnet restore tests/GlassDesk.PluginChecks/GlassDesk.PluginChecks.csproj -r win-x64 --locked-mode
+dotnet run --project tests/GlassDesk.PluginChecks/GlassDesk.PluginChecks.csproj -c Release --no-restore -- --no-stress
 ```
 
-CI 执行原生编译、锁定还原、自包含发布和以上隔离检查；不安装应用、不操作桌面输入或真实音乐，也不自动发布安装包。首次运行结果以 [Actions](https://github.com/SanctuS-awa/GlassDesk/actions) 为准，不预先宣称成功。
+CI 执行原生编译、锁定还原、自包含发布和以上隔离检查；不安装应用、不操作桌面输入或真实音乐，也不自动发布安装包。原生构建写入 `artifacts/native-candidates/ci-<run-id>-<attempt>` 隔离候选目录，并通过 `GlassDeskNativeDirectory` 传给还原、发布和检查步骤。首次运行结果以 [Actions](https://github.com/SanctuS-awa/GlassDesk/actions) 为准，不预先宣称成功。
 
 工作流使用官方 [checkout](https://github.com/actions/checkout) 与 [setup-dotnet](https://github.com/actions/setup-dotnet)，按已核实提交固定版本；仓库权限为只读。参考 [GitHub 工作流语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)。
 

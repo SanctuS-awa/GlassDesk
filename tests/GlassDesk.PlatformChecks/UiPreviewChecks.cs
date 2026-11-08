@@ -17,14 +17,14 @@ internal static class UiPreviewChecks
             var json=JsonSerializer.SerializeToNode(legacy)!.AsObject();json.Remove(nameof(WidgetPreferences.CompanionAppearanceId));
             File.WriteAllText(store.SettingsPath,json.ToJsonString());
             var migrated=store.Load();
-            check(migrated.Version==4&&migrated.LastDetailsPageId==DetailsPageController.Music&&migrated.CompanionAppearanceId==CompanionAppearanceIds.Original&&
-                migrated.Blur==17&&migrated.TintOpacity==.43f&&migrated.AnchorX==.72&&migrated.AnchorY==45&&
+            check(migrated.Version==4&&migrated.LastDetailsPageId==DetailsPageController.Home&&migrated.CompanionAppearanceId==CompanionAppearanceIds.Original&&
+                migrated.Blur==17&&migrated.TintOpacity==.43f&&migrated.AnchorX==.5&&migrated.AnchorY==0&&
                 migrated.HotkeyKey==75&&migrated.RunAtStartup&&!migrated.CompanionEnabled&&migrated.CompanionColor==0xff12abcd,
-                $"v{version} to v4 preserves existing choices, opaque custom RGB and original appearance");
+                $"v{version} to v4 normalizes the details page and fixed anchor while preserving other choices");
             json[nameof(WidgetPreferences.Version)]=3;json[nameof(WidgetPreferences.CompanionAppearanceId)]="future.appearance";
             File.WriteAllText(store.SettingsPath,json.ToJsonString());
             var unknown=store.Load();
-            check(unknown.CompanionAppearanceId==CompanionAppearanceIds.Original&&unknown.AnchorX==.72&&unknown.HotkeyKey==75&&
+            check(unknown.CompanionAppearanceId==CompanionAppearanceIds.Original&&unknown.AnchorX==.5&&unknown.AnchorY==0&&unknown.HotkeyKey==75&&
                 Directory.GetFiles(store.DirectoryPath,"settings.corrupt-*").Length==0,"unknown appearance only falls back that field");
         }
         string directory=Path.Combine(root,"Preview A");

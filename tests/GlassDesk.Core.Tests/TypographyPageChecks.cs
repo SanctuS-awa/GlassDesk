@@ -57,17 +57,17 @@ static class TypographyPageChecks
         {
             var old=new WidgetPreferences{Version=version,AnchorX=.31,CompanionColor=0xff123456,LastDetailsPageId="widgets"};
             var migrated=old.Validated();
-            check(migrated is {Version:4,LastDetailsPageId:"music",AnchorX:.5,CompanionColor:0xff123456},
+            check(migrated is {Version:4,LastDetailsPageId:"home",AnchorX:.5,CompanionColor:0xff123456},
                 $"v{version} migration retains appearance and normalizes the fixed position");
         }
         var invalid=new WidgetPreferences{LastDetailsPageId="unknown",Blur=13}.Validated();
-        check(invalid is {LastDetailsPageId:"music",Blur:13},"an unknown real-page ID falls back without resetting other settings");
+        check(invalid is {LastDetailsPageId:"home",Blur:13},"an unknown real-page ID falls back without resetting other settings");
         var controller=new DetailsPageController(new());var stale=new WidgetPreferences();
         controller.Select("widgets");long oldGeneration=controller.Generation;controller.SetScrollOffset(70);
         check(!controller.SelectPreviewItem("clock")&&controller.CurrentPageId=="widgets"
             &&controller.ApplyTo(stale).LastDetailsPageId=="widgets",
             "preview selection and stale settings saves cannot reset the real widget page");
-        controller.SelectPreviewItem("music");controller.SetScrollOffset(12);controller.Select("widgets");
+        controller.SelectPreviewItem("home");controller.SetScrollOffset(12);controller.Select("widgets");
         controller.MarkSaved(oldGeneration);
         check(controller.ScrollOffset==70&&!controller.IsCurrent(oldGeneration,"widgets")&&controller.SavePending,
             "per-page scroll persists in process and late asynchronous save acknowledgements cannot clear newer state");

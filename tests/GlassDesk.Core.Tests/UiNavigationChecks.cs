@@ -15,7 +15,7 @@ static class UiNavigationChecks
         model.Tick(320);
         check(model.State.OuterState == NavigationOuterState.Open && model.Expansion == 1, "navigation expansion settles after 220 ms");
         model.SetHoveredItem("clock", 320); model.Tick(500);
-        check(model.State.HoveredItemId == "clock" && model.State.SelectedPreviewItemId == "music" && model.EmphasisIndex == 1,
+        check(model.State.HoveredItemId == "clock" && model.State.SelectedPreviewItemId == "home" && model.EmphasisIndex == 1,
             "hover moves shared emphasis without selecting a business page");
         check(model.SelectPreview("notes", 500) && model.State.SelectedPreviewItemId == "notes" && model.State.HoveredItemId == "clock",
             "click commits only the separate preview selection");
@@ -33,7 +33,7 @@ static class UiNavigationChecks
         model.SetPointerInside(true, 2000); model.SetPointerInside(false, 2050); model.Tick(2400);
         check(model.Expansion == 0 && !model.State.IntroConsumed && consumed == 1, "quick enter and leave cancels hover confirmation");
         model.SetPointerInside(true, 2500); model.Close(); model.BeginOpen(3, 2550, false, true); model.Tick(4000);
-        check(model.Expansion == 0 && model.State.SelectedPreviewItemId == "music" && !model.State.IntroConsumed,
+        check(model.Expansion == 0 && model.State.SelectedPreviewItemId == "home" && !model.State.IntroConsumed,
             "new cycle cancels all previous deadlines and resets preview selection");
         model.SetPointerInside(true, 4000); model.Tick(4320); model.SetPointerInside(false, 4400);
         model.SetPointerInside(true, 4500); model.Tick(5000);
@@ -49,7 +49,7 @@ static class UiNavigationChecks
         model.BeginOpen(4, 6000, true, false); model.SetPointerInside(true, 6000); model.Tick(6100);
         check(model.Expansion == 1 && model.State.IntroConsumed && consumed == 2, "disabled companion leaves navigation fully usable without deferred intro");
         model.SetHoveredItem("focus", 6100);
-        check(model.EmphasisIndex == 3 && model.ItemEmphasis[3] == 1 && model.State.SelectedPreviewItemId == "music",
+        check(model.EmphasisIndex == 3 && model.ItemEmphasis[3] == 1 && model.State.SelectedPreviewItemId == "home",
             "reduced motion keeps separate visible hover and selection feedback");
         model.SetPointerInside(false, 6200); model.Tick(6500);
         check(model.Expansion == 0 && !model.NeedsTick, "reduced motion settles with no residual ticking");

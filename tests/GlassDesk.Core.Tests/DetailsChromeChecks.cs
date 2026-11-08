@@ -39,12 +39,12 @@ static class DetailsChromeChecks
             "selection indicator is a 36x36 circle, radius 18 and vertically centred in the dock");
 
         check(DetailsDockItems.All.Count == 5
-            && DetailsDockItems.All.Select(e => e.Id).SequenceEqual(new[] { "music", "widgets", "clock", "focus", "notes" })
-            && DetailsDockItems.All.Select(e => e.Label).SequenceEqual(new[] { "音乐", "小组件", "时钟", "专注", "随记" }),
-            "dock declares music/widgets/clock/focus/notes in order");
+            && DetailsDockItems.All.Select(e => e.Id).SequenceEqual(new[] { "home", "widgets", "clock", "focus", "notes" })
+            && DetailsDockItems.All.Select(e => e.Label).SequenceEqual(new[] { "首页", "小组件", "时钟", "专注", "随记" }),
+            "dock declares home/widgets/clock/focus/notes in order");
         check(DetailsDockItems.All.Select(e => e.ActionId).SequenceEqual(new[] { 120, 121, 122, 123, 124 })
             && DetailsDockItems.All.Select(e => e.IsPage).SequenceEqual(new[] { true, true, false, false, false }),
-            "only music and widgets are real pages; clock/focus/notes are preview destinations");
+            "only home and widgets are real pages; clock/focus/notes are preview destinations");
         check(WidgetActions.Body == 0 && WidgetActions.PluginTools == 8 && WidgetActions.NavigationShell == 99
             && WidgetActions.NavigationFirst == 100 && WidgetActions.CompanionReveal == 110
             && WidgetActions.DockFirst == 120,

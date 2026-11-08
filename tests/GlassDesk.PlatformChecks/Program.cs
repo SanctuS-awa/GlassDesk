@@ -23,7 +23,10 @@ using (var store = new PreferenceStore(Path.Combine(root, "roundtrip")))
     Check(!defaults.RunAtStartup && defaults.HotkeyKey == 0 && defaults.HoverDelayMs == 350, "fresh defaults preserve opt-in startup/hotkey");
     var preferences = defaults with { HoverDelayMs = 640, LeaveDelayMs = 700, AnchorX = .8, AnchorY = 48, MonitorId = "stable-monitor", ReducedMotion = true };
     await store.SaveAsync(preferences);
-    Check(store.Load() == preferences, "preferences survive atomic round-trip");
+    var roundTrip = store.Load();
+    Check(roundTrip == PreferenceStore.Normalize(preferences), "preferences survive atomic round-trip");
+    Check(roundTrip.HoverDelayMs == 640 && roundTrip.LeaveDelayMs == 700 && roundTrip.ReducedMotion,
+        "persisted timer and reduced-motion preferences survive normalization");
     await Task.WhenAll(Enumerable.Range(0, 10).Select(index => store.SaveAsync(preferences with { HoverDelayMs = 100 + index })));
     Check(store.Load().HoverDelayMs is >= 100 and <= 109, "concurrent saves produce complete readable JSON");
     Check(Directory.GetFiles(store.DirectoryPath, "*.tmp").Length == 0, "atomic writes leave no staging files");
@@ -48,14 +51,14 @@ var normalized = PreferenceStore.Normalize(new() { Blur = float.NaN, TintOpacity
     LeaveDelayMs = 8000, AnchorX = double.NaN, AnchorY = double.NegativeInfinity, HotkeyModifiers = 0xffff, HotkeyKey = 999 });
 Check(normalized.Blur == 20 && normalized.TintOpacity == .24f && normalized.HoverDelayMs == 100 && normalized.LeaveDelayMs == 1500,
     "numeric preferences cannot introduce invalid material or timer values");
-Check(normalized.AnchorX == .5 && normalized.AnchorY == 24 && normalized.HotkeyModifiers == 15 && normalized.HotkeyKey == 0,
+Check(normalized.AnchorX == .5 && normalized.AnchorY == 0 && normalized.HotkeyModifiers == 15 && normalized.HotkeyKey == 0,
     "invalid position and hotkey values are sanitized");
 
 var primary = new MonitorDescriptor("primary", new(0, 0, 2560, 1600), new(0, 0, 2560, 1528), 1.5f, true);
 var secondary = new MonitorDescriptor("secondary", new(-1920, 0, 1920, 1080), new(-1920, 0, 1920, 1040), 1, false);
 Check(MonitorService.SelectMonitor([primary, secondary], "secondary") == secondary, "stable monitor identity retains selection");
 Check(MonitorService.SelectMonitor([primary], "disconnected") == primary, "disconnected monitor migrates to primary");
-Check(MonitorService.RestoreAnchor(primary, new()) == (1130, 36), "150-percent anchor is calculated in physical pixels from DIP");
+Check(MonitorService.RestoreAnchor(primary, new()) == (1130, 0), "default anchor is horizontally centered at the top of the work area");
 var edge = MonitorService.RestoreAnchor(secondary, new() { AnchorX = 1, AnchorY = 5000 });
 Check(edge == (-200, 988), "restored anchor stays inside a negative-origin work area");
 Check(MonitorService.SelectMonitor([], null) is null, "empty monitor set fails safely");

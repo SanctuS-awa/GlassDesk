@@ -58,13 +58,19 @@ jobs:
         with:
           global-json-file: global.json
       - name: Build native Windows components
-        run: ./scripts/build-native.ps1 -Configuration Release
+        run: |
+          $candidate = Join-Path $env:GITHUB_WORKSPACE "artifacts/native-candidates/ci-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./scripts/build-native.ps1 -Configuration Release -OutputDirectory $candidate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path (Join-Path $candidate 'GlassDesk.Native.dll'))) { throw 'GlassDesk.Native.dll was not produced.' }
+          "GLASSDESK_NATIVE_DIR=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Restore and publish the self-contained application
         run: |
-          dotnet restore src/GlassDesk.App/GlassDesk.App.csproj --locked-mode
+          dotnet restore src/GlassDesk.App/GlassDesk.App.csproj -r win-x64 --locked-mode "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIR" -m:1 -p:BuildInParallel=false
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet publish src/GlassDesk.App/GlassDesk.App.csproj -c Release -r win-x64 --self-contained true --no-restore -p:GlassDeskUiPreview=false -p:PublishSingleFile=false -p:PublishTrimmed=false -o artifacts/ci/publish
+          dotnet publish src/GlassDesk.App/GlassDesk.App.csproj -c Release -r win-x64 --self-contained true --no-restore -p:GlassDeskUiPreview=false -p:PublishSingleFile=false -p:PublishTrimmed=false "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIR" -m:1 -p:BuildInParallel=false -o artifacts/ci/publish
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path artifacts/ci/publish/GlassDesk.exe)) { throw 'GlassDesk.exe was not published.' }
       - name: Build archived SDK compatibility fixture
         run: |
           dotnet restore tests/Fixtures/LegacyPlugin/GlassDesk.LegacyPlugin.csproj --locked-mode
@@ -76,9 +82,9 @@ jobs:
           $projects = @('GlassDesk.Core.Tests', 'GlassDesk.PlatformChecks', 'GlassDesk.PluginChecks')
           foreach ($project in $projects) {
             $projectPath = "tests/$project/$project.csproj"
-            dotnet restore $projectPath --locked-mode
+            dotnet restore $projectPath -r win-x64 --locked-mode "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIR"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            dotnet run --project $projectPath -c Release --no-restore -- --no-stress
+            dotnet run --project $projectPath -c Release --no-restore "-p:GlassDeskNativeDirectory=$env:GLASSDESK_NATIVE_DIR" -- --no-stress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
